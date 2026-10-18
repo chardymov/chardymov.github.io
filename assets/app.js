@@ -90,7 +90,7 @@
         '<p class="eyebrow">Тест для пар' + (DEMO ? '<span class="demo-badge">демо-режим</span>' : '') + '</p>' +
         '<h1>Насколько хорошо вы понимаете друг друга?</h1>' +
         '<p class="lead">' + QS.length + ' вопроса о вашей паре. Каждый отвечает отдельно, а потом вы оба получаете на почту психологический разбор: портреты, ваши опоры, зоны договорённостей и рекомендации.</p>' +
-        '<div class="cta"><button class="btn" id="go">Пройти тест</button><small>≈ 10 минут · бесплатно</small></div>' +
+        startCta('Пройти тест', '≈ 10 минут · бесплатно') +
       '</section>' +
       '<ol class="steps">' +
         '<li><b>Вы отвечаете</b><span>Выбираете варианты, которые ближе всего вам. Правильных ответов нет.</span></li>' +
@@ -100,7 +100,7 @@
       '<h3>Что внутри</h3><ul class="chips">' + blocks + '</ul>' +
       '<p class="note">Блок о сексуальности можно пропустить. Ваши ответы попадут только в итоговый разбор, который получите вы и ваш партнёр.</p>'
     );
-    on('#go', 'click', function () { track('start'); startQuiz(); });
+    bindStart();
   }
 
   function inviteLanding() {
@@ -118,15 +118,36 @@
           '<p class="eyebrow">Приглашение' + (DEMO ? '<span class="demo-badge">демо-режим</span>' : '') + '</p>' +
           '<h1>' + esc(r.nameA) + ' приглашает вас пройти тест для пар</h1>' +
           '<p class="lead">' + esc(r.nameA) + ' уже ответил(а) на ' + QS.length + ' вопроса о ваших отношениях. Ответьте и вы — и вы оба сразу получите разбор пары на почту.</p>' +
-          '<div class="cta"><button class="btn" id="go">Начать</button><small>≈ 10 минут</small></div>' +
+          startCta('Начать', '≈ 10 минут') +
         '</section>' +
         '<p class="note">Отвечайте самостоятельно и честно — так разбор будет точнее. Ответы ' + esc(r.nameA) + ' вы увидите только в итоговом разборе.</p>'
       );
-      on('#go', 'click', function () { track('start'); startQuiz(); });
+      bindStart();
     }).catch(function (e) { errorScreen(e.message === 'not_found' ? 'Приглашение не найдено. Проверьте ссылку из письма.' : e.message); });
   }
 
-  function startQuiz() {
+  // Если в браузере остались ответы с прошлого раза — предлагаем продолжить или начать заново.
+  function savedCount() {
+    var saved = store.get(progressKey());
+    return saved && saved.answers ? Object.keys(saved.answers).length : 0;
+  }
+  function startCta(label, note) {
+    var n = savedCount();
+    if (!n) return '<div class="cta"><button class="btn" id="go">' + label + '</button><small>' + note + '</small></div>';
+    return '<div class="cta"><button class="btn" id="go">Продолжить</button><button class="btn ghost" id="restart">Начать заново</button>' +
+      '<small>В этом браузере сохранены ответы: ' + n + ' из ' + QS.length + '</small></div>';
+  }
+  function bindStart() {
+    on('#go', 'click', function () { track('start'); startQuiz(false); });
+    on('#restart', 'click', function () { track('start', { restart: true }); startQuiz(true); });
+  }
+
+  function startQuiz(fresh) {
+    if (fresh) {
+      store.del(progressKey());
+      S.answers = {}; S.idx = 0; S.skipSex = false; S.sexIntroSeen = false; S.fixing = false;
+      return showQuestion();
+    }
     var saved = store.get(progressKey());
     if (saved && saved.answers && Object.keys(saved.answers).length) {
       S.answers = saved.answers; S.idx = Math.min(saved.idx || 0, QS.length); S.skipSex = !!saved.skipSex;
