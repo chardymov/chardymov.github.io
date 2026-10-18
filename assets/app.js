@@ -121,36 +121,44 @@
     var first = QS.findIndex(function (x) { return x.block === q.block; });
     if (bl.optional && S.idx === first && !S.sexIntroSeen) return sexIntro();
 
-    var pct = Math.round(100 * S.idx / QS.length);
+    var qi = S.idx, answered = false;
+    var pct = Math.round(100 * qi / QS.length);
     var cur = S.answers[q.id];
+    var notice = S.notice ? '<p class="error">' + esc(S.notice) + '</p>' : '';
+    S.notice = null;
     var opts = Object.keys(q.options).map(function (k) {
       return '<button class="opt' + (cur === k ? ' sel' : '') + '" data-k="' + k + '"><span class="k">' + LETTER[k] + '</span><span>' + esc(q.options[k]) + '</span></button>';
     }).join('');
     render(
       '<div class="quiz-head"><span><b>Блок ' + bl.n + '</b> · ' + esc(bl.title) + '</span><span>' + (S.idx + 1) + ' / ' + QS.length + '</span></div>' +
       '<div class="progress" role="progressbar" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100"><div style="width:' + pct + '%"></div></div>' +
-      '<p class="q-text">' + esc(q.text) + '</p>' +
+      notice + '<p class="q-text">' + esc(q.text) + '</p>' +
       '<div class="opts">' + opts + '</div>' +
       '<div class="quiz-nav">' + (S.idx > 0 ? '<button class="link" id="back">← Назад</button>' : '<span></span>') +
       (cur ? '<button class="link" id="next">Далее →</button>' : '') + '</div>'
     );
     app.querySelectorAll('.opt').forEach(function (b) {
       b.addEventListener('click', function () {
+        // Повторный клик до перехода (двойной тап) не должен перескакивать следующий вопрос.
+        if (answered) return;
+        answered = true;
         app.querySelectorAll('.opt').forEach(function (x) { x.classList.remove('sel'); });
         b.classList.add('sel');
         S.answers[q.id] = b.getAttribute('data-k');
         var prevBlock = q.block;
-        S.idx++;
+        // При дозаполнении пропусков — сразу к следующему пропуску (или к форме).
+        S.idx = S.fixing ? QS.length : qi + 1;
         saveProgress();
         if (S.idx < QS.length && QS[S.idx].block !== prevBlock) track('block_done', { block: prevBlock });
         setTimeout(showQuestion, 220);
       });
     });
     on('#back', 'click', function () { goBack(); });
-    on('#next', 'click', function () { S.idx++; saveProgress(); showQuestion(); });
+    on('#next', 'click', function () { S.idx = S.fixing ? QS.length : qi + 1; saveProgress(); showQuestion(); });
   }
 
   function goBack() {
+    S.fixing = false;
     S.idx = Math.max(0, S.idx - 1);
     var q = QS[S.idx];
     if (BBY[q.block].optional && S.skipSex) { S.skipSex = false; S.sexIntroSeen = false; S.idx = QS.findIndex(function (x) { return x.block === q.block; }); }
@@ -177,7 +185,20 @@
     on('#back', 'click', function () { goBack(); });
   }
 
+  // Индекс первого вопроса без ответа (блок 7 не считается, если его пропустили).
+  function firstMissing() {
+    return QS.findIndex(function (q) { return !S.answers[q.id] && !(BBY[q.block].optional && S.skipSex); });
+  }
+
   function details() {
+    var miss = firstMissing();
+    if (miss >= 0) {
+      S.idx = miss;
+      S.notice = 'Этот вопрос остался без ответа — выберите, пожалуйста, вариант.';
+      S.fixing = true;
+      return showQuestion();
+    }
+    S.fixing = false;
     track('view_details');
     var isB = S.role === 'B', inv = S.invite || {};
     var saved = store.get('cq_contact') || {};
@@ -220,6 +241,7 @@
       }
       if (!f.elements.consent.checked) return fail('Подтвердите согласие, чтобы продолжить.');
       if (v('website')) return; // бот
+      if (firstMissing() >= 0) return details();
       store.set('cq_contact', { nameSelf: v('nameSelf'), emailSelf: v('emailSelf') });
       if (isB) submitB(v('nameSelf'), v('emailSelf'));
       else submitA(v('nameSelf'), v('emailSelf'), v('namePartner'), v('emailPartner'));
