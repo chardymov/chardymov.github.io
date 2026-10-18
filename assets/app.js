@@ -43,13 +43,14 @@
   // такие ответы и сетевые сбои повторяем. Повтор безопасен: create защищён ключом rid,
   // а повторный complete вернёт already_completed.
   var RETRIES = 3;
+  var NO_REPLY = 'Сервер не ответил. Попробуйте, пожалуйста, ещё раз через минуту.';
   function api(action, data, attempt) {
     attempt = attempt || 0;
     data = Object.assign({ action: action }, data);
     if (DEMO) return Demo.call(data);
     function retry(why) {
       console.warn('[api] ' + action + ': ' + why);
-      if (attempt >= RETRIES) throw new Error('Сервер не ответил. Попробуйте, пожалуйста, ещё раз через минуту.');
+      if (attempt >= RETRIES) throw new Error(NO_REPLY);
       return new Promise(function (res) { setTimeout(res, 2000 * (attempt + 1)); })
         .then(function () { return api(action, data, attempt + 1); });
     }
@@ -286,7 +287,12 @@
           '<div class="paper">' + CQA.portraitHtml(me) + '</div>'
         );
       })
-      .catch(function (e) { errorScreen(e.message); });
+      .catch(function (e) {
+        // Ответ мог потеряться уже после отправки писем — не провоцируем повторную отправку.
+        errorScreen(e.message === NO_REPLY
+          ? 'Сервер не успел ответить, но ответы могли уйти. Проверьте почту ' + emailA + ' (и «Спам»): если письмо с вашими ответами пришло, всё в порядке — партнёр уже получил приглашение. Если письма нет через 5 минут, отправьте ответы ещё раз.'
+          : e.message);
+      });
   }
 
   function submitB(nameB, emailB) {
