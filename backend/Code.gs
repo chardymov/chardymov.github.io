@@ -36,7 +36,9 @@ function doPost(e) {
 }
 
 function doGet() {
-  return ContentService.createTextOutput('Couples quiz backend is running.');
+  // JSON, чтобы сайт распознал ответ, если Google превратил POST в GET, и повторил запрос.
+  return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'retry', info: 'Couples quiz backend is running.' }))
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 var ROUTES = {
@@ -52,6 +54,27 @@ var ROUTES = {
 // Первый партнёр отправил ответы: сохраняем, шлём ему копию и приглашение партнёру.
 function create_(d) {
   loadShared_();
+  return once_(d.rid, function () { return createPair_(d); });
+}
+
+// Повтор запроса с тем же rid (сайт повторяет, если ответ Google потерялся) возвращает
+// сохранённый результат и не отправляет письма второй раз.
+function once_(rid, fn) {
+  if (!rid || !/^[a-z0-9]{8,32}$/.test(String(rid))) return fn();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var cache = CacheService.getScriptCache(), key = 'rid_' + rid, hit = cache.get(key);
+    if (hit) return JSON.parse(hit);
+    var res = fn();
+    cache.put(key, JSON.stringify(res), 21600);
+    return res;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function createPair_(d) {
   var nameA = cleanName_(d.nameA), nameB = cleanName_(d.nameB);
   var emailA = cleanEmail_(d.emailA), emailB = cleanEmail_(d.emailB);
   if (!nameA || !nameB) throw new Error('Укажите имена.');

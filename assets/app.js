@@ -39,13 +39,32 @@
   }
 
   // ───────────────────────── API
-  function api(action, data) {
+  // Google Apps Script иногда отвечает не JSON (пустой ответ или служебная страница) —
+  // такие ответы и сетевые сбои повторяем. Повтор безопасен: create защищён ключом rid,
+  // а повторный complete вернёт already_completed.
+  var RETRIES = 3;
+  function api(action, data, attempt) {
+    attempt = attempt || 0;
     data = Object.assign({ action: action }, data);
     if (DEMO) return Demo.call(data);
+    function retry(why) {
+      console.warn('[api] ' + action + ': ' + why);
+      if (attempt >= RETRIES) throw new Error('Сервер не ответил. Попробуйте, пожалуйста, ещё раз через минуту.');
+      return new Promise(function (res) { setTimeout(res, 2000 * (attempt + 1)); })
+        .then(function () { return api(action, data, attempt + 1); });
+    }
     return fetch(CONFIG.API_URL, { method: 'POST', body: JSON.stringify(data) })
-      .then(function (r) { return r.json(); })
-      .then(function (j) { if (!j.ok) throw new Error(j.error || 'Что-то пошло не так'); return j; });
+      .then(function (r) { return r.text(); }, function (e) { return { netError: e }; })
+      .then(function (txt) {
+        if (txt && txt.netError) return retry('network ' + txt.netError.message);
+        var j = null;
+        try { j = JSON.parse(txt); } catch (e) { /* не JSON */ }
+        if (!j || typeof j.ok !== 'boolean' || j.error === 'retry') return retry('non-JSON reply: ' + String(txt).slice(0, 120));
+        if (!j.ok) throw new Error(j.error || 'Что-то пошло не так');
+        return j;
+      });
   }
+  function rid() { return (Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)).slice(0, 16); }
 
   // ───────────────────────── рендер-помощники
   function render(html) {
@@ -253,7 +272,7 @@
 
   function submitA(nameA, emailA, nameB, emailB) {
     spinner('Отправляем ответы и приглашение…');
-    api('create', { nameA: nameA, emailA: emailA, nameB: nameB, emailB: emailB, answers: S.answers, meta: { utm: utm, sid: sid } })
+    api('create', { rid: rid(), nameA: nameA, emailA: emailA, nameB: nameB, emailB: emailB, answers: S.answers, meta: { utm: utm, sid: sid } })
       .then(function () {
         track('submit_a');
         store.del(progressKey());
@@ -278,7 +297,14 @@
         store.del(progressKey());
         showReport(r.html, 'Разбор готов и отправлен вам обоим на почту.');
       })
-      .catch(function (e) { errorScreen(e.message === 'already_completed' ? 'По этой ссылке уже ответили. Разбор отправлен на почту.' : e.message); });
+      .catch(function (e) {
+        if (e.message !== 'already_completed') return errorScreen(e.message);
+        // Ответы уже приняты (например, первый запрос дошёл, а ответ потерялся) — просто показываем разбор.
+        store.del(progressKey());
+        api('report', { id: S.pairId, t: S.token })
+          .then(function (r) { showReport(r.html, 'Разбор готов и отправлен вам обоим на почту.'); })
+          .catch(function () { errorScreen('Ваши ответы приняты, разбор отправлен на почту.'); });
+      });
   }
 
   function showReport(html, note) {
