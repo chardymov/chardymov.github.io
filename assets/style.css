@@ -160,3 +160,58 @@ a { color: var(--accent); }
 .mail-list button:hover { background: var(--surface-2); }
 .mail-list small { display: block; color: var(--muted); }
 .mail-frame { width: 100%; height: 70vh; border: 0; background: #faf5f1; display: block; }
+
+/* ── разделы и темы */
+.btn.small { min-height: 42px; padding: 0 18px; font-size: 15px; border-radius: 12px; }
+.sections { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 24px 0 8px; }
+@media (max-width: 640px) { .sections { grid-template-columns: 1fr; } }
+.section-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px 20px; box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.section-card h2 { margin-bottom: .35em; }
+.section-card p { color: var(--muted); font-size: 15px; }
+.section-card .cta { margin-top: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.section-card .cta small { color: var(--muted); font-size: 13px; }
+.section-card > .btn { margin-top: auto; align-self: flex-start; }
+.banner { display: flex; justify-content: space-between; align-items: center; gap: 12px; text-decoration: none; color: var(--ink);
+  background: var(--accent-soft); border-radius: var(--radius); padding: 14px 18px; margin: 12px 0 0; }
+.banner b { display: block; color: var(--accent); }
+.banner .arrow { font-size: 22px; color: var(--accent); }
+.topic-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0 20px; }
+@media (max-width: 640px) { .topic-grid { grid-template-columns: 1fr; } }
+.topic-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; display: flex; flex-direction: column; gap: 6px; }
+.topic-card.wide { margin: 0 0 28px; }
+.topic-card.hot { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.topic-card.soon { background: transparent; border-style: dashed; }
+.topic-card.soon h3 { color: var(--muted); }
+.topic-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.topic-card h3 { font-size: 19px; margin: 0; }
+.topic-card p { color: var(--muted); font-size: 14px; margin: 0 0 6px; }
+.topic-foot { margin-top: auto; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.topic-foot small { color: var(--muted); font-size: 13px; }
+.soon-h { font-size: 17px; color: var(--muted); margin-top: 8px; }
+.chip { flex: none; display: inline-block; font-size: 12px; font-weight: 700; border-radius: 999px; padding: 4px 10px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+.chip.accent { background: var(--accent); color: var(--accent-ink); }
+.chip.good { background: #e5f3ea; color: #2f7d4f; }
+.crumbs { margin: 4px 0 0; font-size: 14px; }
+.crumbs a { color: var(--muted); text-decoration: none; }
+.crumbs a:hover { color: var(--ink); }
+.cab-hero h1 .a { color: var(--accent); }
+.cab-hero h1 .b { color: var(--partner); }
+.howto { list-style: none; padding: 0; margin: 0 0 20px; display: grid; gap: 8px; }
+.howto li { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; font-size: 15px; color: var(--muted); }
+.howto b { color: var(--ink); }
+.accent-note { border-left-color: var(--accent); color: var(--ink); }
+.cab-cta { margin-top: 20px; }
+.cab-cta h3 { margin-bottom: .3em; }
+.cab-cta p { color: var(--muted); }
+.field textarea { width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; resize: vertical; }
+.field textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+
+/* ── вопрос: несколько ответов и догадка */
+.hint { color: var(--muted); font-size: 14px; margin: -12px 0 14px; }
+.kicker { font-size: 15px; color: var(--partner); margin: 0 0 8px; }
+.kicker b { font-weight: 700; }
+.guess-box { border-left: 3px solid var(--partner); padding-left: 16px; }
+.guess-box .opt.sel { border-color: var(--partner); background: color-mix(in srgb, var(--partner) 14%, var(--surface)); }
+.guess-box .opt.sel .k { background: var(--partner); color: var(--surface); }
+.guess-box .opt:hover { border-color: var(--partner); }
+.nav-right { display: inline-flex; align-items: center; gap: 16px; }

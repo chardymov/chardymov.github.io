@@ -18,13 +18,16 @@
 
   // ───────────────────────── состояние
   var S = {
-    role: 'A',          // A — заполняет первым, B — по приглашению
+    role: 'A',          // A — заполняет первым, B — по приглашению; в кабинете — кто открыл
+    ctx: 'new',         // портрет: new — с главной, invite — по старой ссылке-приглашению, cabinet — из кабинета
     pairId: null, token: null,
     invite: null,       // { nameA, nameB, emailB }
+    cab: null,          // ответ cabinet: { me, nameMe, namePartner, portrait, topics }
     answers: {}, idx: 0, skipSex: false
   };
-  function progressKey() { return 'cq_progress_' + (S.pairId || 'new'); }
+  function progressKey() { return 'cq_progress_' + (S.ctx === 'cabinet' ? S.token : S.pairId || 'new'); }
   function saveProgress() { store.set(progressKey(), { answers: S.answers, idx: S.idx, skipSex: S.skipSex }); }
+  function cabHref(extra) { return '?c=' + encodeURIComponent(S.pairId) + '&t=' + encodeURIComponent(S.token) + (extra || ''); }
 
   // ───────────────────────── аналитика воронки
   var utm = {};
@@ -40,8 +43,8 @@
 
   // ───────────────────────── API
   // Google Apps Script иногда отвечает не JSON (пустой ответ или служебная страница) —
-  // такие ответы и сетевые сбои повторяем. Повтор безопасен: create защищён ключом rid,
-  // а повторный complete вернёт already_completed.
+  // такие ответы и сетевые сбои повторяем. Повтор безопасен: create, start и answer защищены
+  // ключом rid, а повторный complete вернёт already_completed.
   var RETRIES = 3;
   var NO_REPLY = 'Сервер не ответил. Попробуйте, пожалуйста, ещё раз через минуту.';
   function api(action, data, attempt) {
@@ -75,34 +78,151 @@
   function $(sel) { return app.querySelector(sel); }
   function on(sel, ev, fn) { var el = $(sel); if (el) el.addEventListener(ev, fn); }
   function spinner(text) { render('<div class="center"><div class="spinner"></div><p class="sub">' + esc(text) + '</p></div>'); }
-  function errorScreen(msg) {
-    render('<div class="panel center"><h2>Не получилось</h2><p>' + esc(msg) + '</p><a class="btn ghost" href="./">На главную</a></div>');
+  function errorScreen(msg, back) {
+    render('<div class="panel center"><h2>Не получилось</h2><p>' + esc(msg) + '</p><a class="btn ghost" href="' + (back || './') + '">' + (back ? 'Вернуться' : 'На главную') + '</a></div>');
   }
-  var LETTER = { a: 'А', b: 'Б', c: 'В', d: 'Г', e: 'Д' };
+  function progressBar(pct) {
+    return '<div class="progress" role="progressbar" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100"><div style="width:' + pct + '%"></div></div>';
+  }
+  var LETTER = { a: 'А', b: 'Б', c: 'В', d: 'Г', e: 'Д', f: 'Е', g: 'Ж' };
   var emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+  function arr(v) { return CQA.arr(v); }
 
-  // ───────────────────────── экраны
+  // Экран вопроса — общий для портрета и тем.
+  // o: { head, pct, kicker, text, q, sel, notice, guess, onBack, onSkip, onDone(keys) }
+  function questionScreen(o) {
+    var q = o.q, max = CQT.maxPick(q), sel = arr(o.sel).slice(), locked = false;
+    var opts = Object.keys(q.options).map(function (k) {
+      var on_ = sel.indexOf(k) >= 0;
+      return '<button class="opt' + (on_ ? ' sel' : '') + '" data-k="' + k + '" aria-pressed="' + on_ + '"><span class="k">' + LETTER[k] + '</span><span>' + esc(q.options[k]) + '</span></button>';
+    }).join('');
+    var right = (o.onSkip ? '<button class="link" id="skip">Пропустить</button>' : '') +
+      (max > 1 ? '<button class="btn small" id="next"' + (sel.length ? '' : ' disabled') + '>Далее</button>'
+        : sel.length ? '<button class="link" id="next">Далее →</button>' : '');
+    render(
+      o.head + progressBar(o.pct) +
+      (o.notice ? '<p class="error">' + esc(o.notice) + '</p>' : '') +
+      '<div class="' + (o.guess ? 'guess-box' : '') + '">' +
+        (o.kicker ? '<p class="kicker">' + o.kicker + '</p>' : '') +
+        '<p class="q-text">' + esc(o.text) + '</p>' +
+        (max > 1 ? '<p class="hint">Можно выбрать до ' + max + ' вариантов</p>' : '') +
+        '<div class="opts">' + opts + '</div>' +
+      '</div>' +
+      '<div class="quiz-nav">' + (o.onBack ? '<button class="link" id="back">← Назад</button>' : '<span></span>') +
+      '<span class="nav-right">' + right + '</span></div>'
+    );
+    function paint() {
+      app.querySelectorAll('.opt').forEach(function (b) {
+        var k = b.getAttribute('data-k'), s = sel.indexOf(k) >= 0;
+        b.classList.toggle('sel', s);
+        b.setAttribute('aria-pressed', String(s));
+      });
+      var n = $('#next');
+      if (n && max > 1) n.disabled = !sel.length;
+    }
+    app.querySelectorAll('.opt').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var k = b.getAttribute('data-k');
+        if (max === 1) {
+          // Повторный клик до перехода (двойной тап) не должен перескакивать следующий вопрос.
+          if (locked) return;
+          locked = true;
+          sel = [k]; paint();
+          setTimeout(function () { o.onDone(sel); }, 220);
+          return;
+        }
+        var i = sel.indexOf(k);
+        if (i >= 0) sel.splice(i, 1);
+        else { sel.push(k); if (sel.length > max) sel.shift(); }
+        paint();
+      });
+    });
+    on('#next', 'click', function () { if (sel.length) o.onDone(sel); });
+    on('#back', 'click', function () { o.onBack(); });
+    on('#skip', 'click', function () { o.onSkip(); });
+  }
+  function store1(q, keys) { return CQT.cleanKeys(q, keys); }
+
+  // ───────────────────────── главная
   function landing() {
     track('view_landing');
-    var blocks = D.blocks.map(function (b) { return '<li>' + esc(b.title) + '</li>'; }).join('');
+    var cab = store.get('cq_cab');
     render(
       '<section class="hero">' +
-        '<p class="eyebrow">Тест для пар' + (DEMO ? '<span class="demo-badge">демо-режим</span>' : '') + '</p>' +
-        '<h1>Насколько хорошо вы понимаете друг друга?</h1>' +
-        '<p class="lead">' + QS.length + ' вопроса о вашей паре. Каждый отвечает отдельно, а потом вы оба получаете на почту психологический разбор: портреты, ваши опоры, зоны договорённостей и рекомендации.</p>' +
-        startCta('Пройти тест', '≈ 10 минут · бесплатно') +
+        '<p class="eyebrow">Для пар' + (DEMO ? '<span class="demo-badge">демо-режим</span>' : '') + '</p>' +
+        '<h1>Поговорите друг с другом — по-настоящему</h1>' +
+        '<p class="lead">Каждый отвечает на вопросы сам, а потом вы оба получаете разбор: что вас объединяет, где вы видите вещи по-разному и с чего начать разговор.</p>' +
       '</section>' +
+      (cab && cab.id ? '<a class="banner" href="?c=' + encodeURIComponent(cab.id) + '&t=' + encodeURIComponent(cab.t) + '"><span><b>Кабинет пары</b>' +
+        (cab.me ? esc(cab.me) + ' и ' + esc(cab.partner) : 'ваши темы и разборы') + '</span><span class="arrow">→</span></a>' : '') +
+      '<div class="sections">' +
+        '<section class="section-card">' +
+          '<p class="eyebrow">Раздел 1</p><h2>Портрет пары</h2>' +
+          '<p>' + QS.length + ' вопроса об общении, конфликтах, быте, деньгах, близости и будущем. Психологические портреты, ваши опоры, зоны договорённостей и рекомендации.</p>' +
+          startCta('Пройти портрет', '≈ 10 минут · бесплатно') +
+        '</section>' +
+        '<section class="section-card">' +
+          '<p class="eyebrow">Раздел 2</p><h2>Разговоры</h2>' +
+          '<p>Темы для пар, которые давно вместе и хотят снова слышать друг друга. Выбираете одну тему на сегодня, отвечаете и угадываете ответы партнёра — и получаете план разговора на вечер.</p>' +
+          '<a class="btn ghost" href="#topics">Выбрать тему</a>' +
+        '</section>' +
+      '</div>' +
       '<ol class="steps">' +
-        '<li><b>Вы отвечаете</b><span>Выбираете варианты, которые ближе всего вам. Правильных ответов нет.</span></li>' +
+        '<li><b>Вы отвечаете</b><span>Можно отметить до двух вариантов. В темах — ещё и угадать, что ответит партнёр.</span></li>' +
         '<li><b>Партнёр получает ссылку</b><span>Указываете email — свой и партнёра. Партнёр отвечает со своего телефона.</span></li>' +
-        '<li><b>Разбор приходит обоим</b><span>Сравнение ответов, портреты, динамики пары и что с этим делать.</span></li>' +
+        '<li><b>Разбор приходит обоим</b><span>Каждый новый разбор учитывает портрет и все темы, которые вы уже прошли.</span></li>' +
       '</ol>' +
-      '<h3>Что внутри</h3><ul class="chips">' + blocks + '</ul>' +
-      '<p class="note">Блок о сексуальности можно пропустить. Ваши ответы попадут только в итоговый разбор, который получите вы и ваш партнёр.</p>'
+      '<h2 id="topics">Темы для разговора</h2>' +
+      topicGrid(null) +
+      '<p class="note">Ваши ответы попадут только в разбор, который получите вы и ваш партнёр. Ответы партнёра вы увидите, только когда ответите оба.</p>'
     );
     bindStart();
+    bindTopicGrid(function (id) {
+      if (cab && cab.id) { location.href = '?c=' + encodeURIComponent(cab.id) + '&t=' + encodeURIComponent(cab.t) + '&topic=' + id; return; }
+      S.ctx = 'new';
+      topicIntro(id);
+    });
   }
 
+  // Карточки тем; status — темы из кабинета (или null на главной)
+  function topicGrid(status) {
+    var live = CQT.topics.map(function (t) {
+      var st = status && status[t.id] || {}, chip = '', label = 'Выбрать';
+      if (status) {
+        if (st.done) { chip = '<span class="chip good">Разбор готов</span>'; label = 'Открыть разбор'; }
+        else if (st.me) { chip = '<span class="chip">Ждём ответа партнёра</span>'; label = 'Подробнее'; }
+        else if (st.partner) { chip = '<span class="chip accent">Ваша очередь</span>'; label = 'Ответить'; }
+        else label = 'Начать';
+      }
+      return '<div class="topic-card' + (st.partner && !st.me ? ' hot' : '') + '"><div class="topic-top"><h3>' + esc(t.title) + '</h3>' + chip + '</div>' +
+        '<p>' + esc(t.lead) + '</p><div class="topic-foot"><small>' + t.questions.length + ' вопросов · ≈ ' + t.minutes + ' мин' + (t.deep ? ' · глубокая' : '') + '</small>' +
+        '<button class="btn small' + (st.done || st.me ? ' ghost' : '') + '" data-topic="' + t.id + '">' + label + '</button></div></div>';
+    }).join('');
+    var votes = store.get('cq_votes') || {};
+    var soon = CQT.soon.map(function (t) {
+      return '<div class="topic-card soon"><div class="topic-top"><h3>' + esc(t.title) + '</h3><span class="chip">скоро</span></div><p>' + esc(t.lead) + '</p>' +
+        '<div class="topic-foot"><small>' + (votes[t.id] ? 'Спасибо! Учтём ваш голос' : 'Хотите эту тему раньше?') + '</small>' +
+        (votes[t.id] ? '' : '<button class="btn small ghost" data-vote="' + t.id + '">Хочу эту тему</button>') + '</div></div>';
+    }).join('');
+    return '<div class="topic-grid">' + live + '</div><h3 class="soon-h">Скоро</h3><div class="topic-grid">' + soon + '</div>';
+  }
+  function bindTopicGrid(open) {
+    app.querySelectorAll('[data-topic]').forEach(function (b) {
+      b.addEventListener('click', function () { track('topic_pick', { topic: b.getAttribute('data-topic') }); open(b.getAttribute('data-topic')); });
+    });
+    app.querySelectorAll('[data-vote]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var id = b.getAttribute('data-vote'), votes = store.get('cq_votes') || {};
+        votes[id] = 1; store.set('cq_votes', votes);
+        track('vote_topic', { topic: id });
+        var foot = b.parentNode;
+        foot.querySelector('small').textContent = 'Спасибо! Учтём ваш голос';
+        b.remove();
+      });
+    });
+  }
+
+  // ───────────────────────── портрет пары
   function inviteLanding() {
     spinner('Загружаем приглашение…');
     api('invite', { id: S.pairId, t: S.token }).then(function (r) {
@@ -120,10 +240,27 @@
           '<p class="lead">' + esc(r.nameA) + ' уже ответил(а) на ' + QS.length + ' вопроса о ваших отношениях. Ответьте и вы — и вы оба сразу получите разбор пары на почту.</p>' +
           startCta('Начать', '≈ 10 минут') +
         '</section>' +
-        '<p class="note">Отвечайте самостоятельно и честно — так разбор будет точнее. Ответы ' + esc(r.nameA) + ' вы увидите только в итоговом разборе.</p>'
+        '<p class="note">Отвечайте самостоятельно и честно — так разбор будет точнее. На некоторые вопросы можно выбрать до двух вариантов. Ответы ' + esc(r.nameA) + ' вы увидите только в итоговом разборе.</p>'
       );
       bindStart();
     }).catch(function (e) { errorScreen(e.message === 'not_found' ? 'Приглашение не найдено. Проверьте ссылку из письма.' : e.message); });
+  }
+
+  // Портрет из кабинета пары
+  function portraitIntro() {
+    var c = S.cab;
+    render(
+      '<p class="crumbs"><a href="' + cabHref() + '">← Кабинет пары</a></p>' +
+      '<section class="hero">' +
+        '<p class="eyebrow">Портрет пары</p>' +
+        '<h1>' + QS.length + ' вопроса о вашей паре</h1>' +
+        '<p class="lead">' + (c.portrait.partner ? esc(c.namePartner) + ' уже ответил(а). Как только ответите вы, разбор придёт вам обоим.' :
+          'Ответьте на вопросы — ' + esc(c.namePartner) + ' получит приглашение ответить со своей стороны, и разбор придёт вам обоим.') + '</p>' +
+        startCta('Начать', '≈ 10 минут') +
+      '</section>' +
+      '<p class="note">Ответы портрета сделают точнее и разборы тем в разделе «Разговоры».</p>'
+    );
+    bindStart();
   }
 
   // Если в браузере остались ответы с прошлого раза — предлагаем продолжить или начать заново.
@@ -162,40 +299,21 @@
     var first = QS.findIndex(function (x) { return x.block === q.block; });
     if (bl.optional && S.idx === first && !S.sexIntroSeen) return sexIntro();
 
-    var qi = S.idx, answered = false;
-    var pct = Math.round(100 * qi / QS.length);
-    var cur = S.answers[q.id];
-    var notice = S.notice ? '<p class="error">' + esc(S.notice) + '</p>' : '';
+    var qi = S.idx, notice = S.notice;
     S.notice = null;
-    var opts = Object.keys(q.options).map(function (k) {
-      return '<button class="opt' + (cur === k ? ' sel' : '') + '" data-k="' + k + '"><span class="k">' + LETTER[k] + '</span><span>' + esc(q.options[k]) + '</span></button>';
-    }).join('');
-    render(
-      '<div class="quiz-head"><span><b>Блок ' + bl.n + '</b> · ' + esc(bl.title) + '</span><span>' + (S.idx + 1) + ' / ' + QS.length + '</span></div>' +
-      '<div class="progress" role="progressbar" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100"><div style="width:' + pct + '%"></div></div>' +
-      notice + '<p class="q-text">' + esc(q.text) + '</p>' +
-      '<div class="opts">' + opts + '</div>' +
-      '<div class="quiz-nav">' + (S.idx > 0 ? '<button class="link" id="back">← Назад</button>' : '<span></span>') +
-      (cur ? '<button class="link" id="next">Далее →</button>' : '') + '</div>'
-    );
-    app.querySelectorAll('.opt').forEach(function (b) {
-      b.addEventListener('click', function () {
-        // Повторный клик до перехода (двойной тап) не должен перескакивать следующий вопрос.
-        if (answered) return;
-        answered = true;
-        app.querySelectorAll('.opt').forEach(function (x) { x.classList.remove('sel'); });
-        b.classList.add('sel');
-        S.answers[q.id] = b.getAttribute('data-k');
-        var prevBlock = q.block;
+    questionScreen({
+      head: '<div class="quiz-head"><span><b>Блок ' + bl.n + '</b> · ' + esc(bl.title) + '</span><span>' + (qi + 1) + ' / ' + QS.length + '</span></div>',
+      pct: Math.round(100 * qi / QS.length), text: q.text, q: q, sel: S.answers[q.id], notice: notice,
+      onBack: qi > 0 ? goBack : null,
+      onDone: function (keys) {
+        S.answers[q.id] = store1(q, keys);
         // При дозаполнении пропусков — сразу к следующему пропуску (или к форме).
         S.idx = S.fixing ? QS.length : qi + 1;
         saveProgress();
-        if (S.idx < QS.length && QS[S.idx].block !== prevBlock) track('block_done', { block: prevBlock });
-        setTimeout(showQuestion, 220);
-      });
+        if (S.idx < QS.length && QS[S.idx].block !== q.block) track('block_done', { block: q.block });
+        showQuestion();
+      }
     });
-    on('#back', 'click', function () { goBack(); });
-    on('#next', 'click', function () { S.idx = S.fixing ? QS.length : qi + 1; saveProgress(); showQuestion(); });
   }
 
   function goBack() {
@@ -211,7 +329,7 @@
     var bl = D.blocks.filter(function (b) { return b.optional; })[0];
     render(
       '<div class="quiz-head"><span><b>Блок ' + bl.n + '</b> · ' + esc(bl.title) + '</span><span>18+</span></div>' +
-      '<div class="progress"><div style="width:' + Math.round(100 * S.idx / QS.length) + '%"></div></div>' +
+      progressBar(Math.round(100 * S.idx / QS.length)) +
       '<div class="panel stack"><h2>' + esc(bl.title) + '</h2><p>' + esc(bl.intro) + '</p>' +
       '<div style="display:flex;flex-wrap:wrap;gap:12px"><button class="btn" id="yes">Ответить на блок</button><button class="btn ghost" id="skip">Пропустить</button></div></div>' +
       '<div class="quiz-nav" style="margin-top:16px"><button class="link" id="back">← Назад</button><span></span></div>'
@@ -231,6 +349,8 @@
     return QS.findIndex(function (q) { return !S.answers[q.id] && !(BBY[q.block].optional && S.skipSex); });
   }
 
+  var CONSENT = '<label class="check"><input type="checkbox" name="consent"><span>Мне есть 18 лет. Я согласен(на), что мои ответы будут сохранены, обработаны (в том числе автоматически, с помощью ИИ) и включены в разбор, который получим я и мой партнёр.</span></label>';
+
   function details() {
     var miss = firstMissing();
     if (miss >= 0) {
@@ -241,29 +361,31 @@
     }
     S.fixing = false;
     track('view_details');
-    var isB = S.role === 'B', inv = S.invite || {};
+    var isB = S.ctx === 'invite', isCab = S.ctx === 'cabinet', inv = S.invite || {};
     var saved = store.get('cq_contact') || {};
     render(
       '<div class="quiz-head"><span><b>Почти готово</b></span><span>' + QS.length + ' / ' + QS.length + '</span></div>' +
-      '<div class="progress"><div style="width:100%"></div></div>' +
+      progressBar(100) +
       '<form class="panel" id="f" novalidate>' +
-        (isB
-          ? '<h2>Куда отправить разбор?</h2><p class="sub">Разбор придёт вам и ' + esc(inv.nameA) + ' сразу после отправки.</p>' +
-            '<div class="grid2">' +
-              field('nameSelf', 'Ваше имя', 'text', inv.nameB || '', 'given-name') +
-              field('emailSelf', 'Ваш email', 'email', inv.emailB || '', 'email') +
-            '</div>'
-          : '<h2>Кому отправить?</h2><p class="sub">Вам придут ваши ответы, а партнёру — ссылка, чтобы ответить со своей стороны.</p>' +
-            '<div class="grid2">' +
-              field('nameSelf', 'Ваше имя', 'text', saved.nameSelf || '', 'given-name') +
-              field('emailSelf', 'Ваш email', 'email', saved.emailSelf || '', 'email') +
-              field('namePartner', 'Имя партнёра', 'text', '', 'off') +
-              field('emailPartner', 'Email партнёра', 'email', '', 'off') +
-            '</div>') +
+        (isCab
+          ? '<h2>Отправить ответы?</h2><p class="sub">' + (S.cab.portrait.partner ? 'Разбор придёт вам и ' + esc(S.cab.namePartner) + ' сразу после отправки.' : esc(S.cab.namePartner) + ' получит приглашение ответить, а разбор придёт вам обоим.') + '</p>'
+          : isB
+            ? '<h2>Куда отправить разбор?</h2><p class="sub">Разбор придёт вам и ' + esc(inv.nameA) + ' сразу после отправки.</p>' +
+              '<div class="grid2">' +
+                field('nameSelf', 'Ваше имя', 'text', inv.nameB || '', 'given-name') +
+                field('emailSelf', 'Ваш email', 'email', inv.emailB || '', 'email') +
+              '</div>'
+            : '<h2>Кому отправить?</h2><p class="sub">Вам придут ваши ответы, а партнёру — ссылка, чтобы ответить со своей стороны.</p>' +
+              '<div class="grid2">' +
+                field('nameSelf', 'Ваше имя', 'text', saved.nameSelf || '', 'given-name') +
+                field('emailSelf', 'Ваш email', 'email', saved.emailSelf || '', 'email') +
+                field('namePartner', 'Имя партнёра', 'text', '', 'off') +
+                field('emailPartner', 'Email партнёра', 'email', '', 'off') +
+              '</div>') +
         '<label class="hp" aria-hidden="true">Сайт<input name="website" tabindex="-1" autocomplete="off"></label>' +
-        '<label class="check"><input type="checkbox" name="consent"><span>Мне есть 18 лет. Я согласен(на), что мои ответы будут сохранены, обработаны (в том числе автоматически, с помощью ИИ) и включены в разбор, который получим я и мой партнёр.</span></label>' +
+        CONSENT +
         '<p class="error" id="err" hidden></p>' +
-        '<button class="btn block" type="submit">' + (isB ? 'Получить разбор' : 'Отправить') + '</button>' +
+        '<button class="btn block" type="submit">' + (isB || (isCab && S.cab.portrait.partner) ? 'Получить разбор' : 'Отправить') + '</button>' +
         '<div class="quiz-nav" style="margin-top:8px"><button class="link" type="button" id="back">← Вернуться к вопросам</button><span></span></div>' +
       '</form>'
     );
@@ -273,9 +395,11 @@
       var f = e.target, v = function (n) { return (f.elements[n] && f.elements[n].value || '').trim(); };
       var err = $('#err');
       function fail(m) { err.textContent = m; err.hidden = false; }
-      if (!v('nameSelf')) return fail('Укажите ваше имя.');
-      if (!emailRe.test(v('emailSelf'))) return fail('Проверьте ваш email.');
-      if (!isB) {
+      if (!isCab) {
+        if (!v('nameSelf')) return fail('Укажите ваше имя.');
+        if (!emailRe.test(v('emailSelf'))) return fail('Проверьте ваш email.');
+      }
+      if (!isB && !isCab) {
         if (!v('namePartner')) return fail('Укажите имя партнёра.');
         if (!emailRe.test(v('emailPartner'))) return fail('Проверьте email партнёра.');
         if (v('emailPartner').toLowerCase() === v('emailSelf').toLowerCase()) return fail('Email партнёра должен отличаться от вашего.');
@@ -283,6 +407,7 @@
       if (!f.elements.consent.checked) return fail('Подтвердите согласие, чтобы продолжить.');
       if (v('website')) return; // бот
       if (firstMissing() >= 0) return details();
+      if (isCab) return submitCabPortrait();
       store.set('cq_contact', { nameSelf: v('nameSelf'), emailSelf: v('emailSelf') });
       if (isB) submitB(v('nameSelf'), v('emailSelf'));
       else submitA(v('nameSelf'), v('emailSelf'), v('namePartner'), v('emailPartner'));
@@ -291,29 +416,35 @@
   function field(name, label, type, val, ac) {
     return '<label class="field"><span>' + label + '</span><input name="' + name + '" type="' + type + '" value="' + esc(val) + '" autocomplete="' + ac + '"' + (type === 'email' ? ' inputmode="email"' : '') + ' maxlength="80" required></label>';
   }
+  function lostReply(email) {
+    return 'Сервер не успел ответить, но ответы могли уйти. Проверьте почту ' + email + ' (и «Спам»): если письмо пришло, всё в порядке — партнёр уже получил приглашение. Если письма нет через 5 минут, отправьте ответы ещё раз.';
+  }
 
   function submitA(nameA, emailA, nameB, emailB) {
     spinner('Отправляем ответы и приглашение…');
     api('create', { rid: rid(), nameA: nameA, emailA: emailA, nameB: nameB, emailB: emailB, answers: S.answers, meta: { utm: utm, sid: sid } })
-      .then(function () {
+      .then(function (r) {
         track('submit_a');
         store.del(progressKey());
+        if (r.t) store.set('cq_cab', { id: r.id, t: r.t, me: nameA, partner: nameB });
         var me = { name: nameA, answers: S.answers };
         render(
           '<div class="center"><div class="okmark">✓</div><h2>Готово!</h2>' +
           '<p>Ваши ответы отправлены на <b>' + esc(emailA) + '</b>, а <b>' + esc(nameB) + '</b> получит приглашение на ' + esc(emailB) + '.<br>Как только партнёр ответит, разбор придёт вам обоим.</p>' +
-          (DEMO ? '<p class="sub">Демо-режим: письма не отправляются, их можно посмотреть в «Демо-почте» внизу справа.</p>' : '<p class="sub">Не видите письмо? Проверьте папку «Спам» и «Промоакции».</p>') +
+          mailNote() +
+          (r.t ? '<p><a class="btn ghost" href="?c=' + encodeURIComponent(r.id) + '&t=' + encodeURIComponent(r.t) + '">Пока ждёте — выбрать тему для разговора</a></p>' : '') +
           '</div>' +
-          '<h2 style="margin-top:32px">Пока ждёте — ваш личный портрет</h2>' +
+          '<h2 style="margin-top:32px">Ваш личный портрет</h2>' +
           '<div class="paper">' + CQA.portraitHtml(me) + '</div>'
         );
       })
       .catch(function (e) {
         // Ответ мог потеряться уже после отправки писем — не провоцируем повторную отправку.
-        errorScreen(e.message === NO_REPLY
-          ? 'Сервер не успел ответить, но ответы могли уйти. Проверьте почту ' + emailA + ' (и «Спам»): если письмо с вашими ответами пришло, всё в порядке — партнёр уже получил приглашение. Если письма нет через 5 минут, отправьте ответы ещё раз.'
-          : e.message);
+        errorScreen(e.message === NO_REPLY ? lostReply(emailA) : e.message);
       });
+  }
+  function mailNote() {
+    return DEMO ? '<p class="sub">Демо-режим: письма не отправляются, их можно посмотреть в «Демо-почте» внизу справа.</p>' : '<p class="sub">Не видите письмо? Проверьте папку «Спам» и «Промоакции».</p>';
   }
 
   function submitB(nameB, emailB) {
@@ -334,9 +465,32 @@
       });
   }
 
+  function submitCabPortrait() {
+    spinner(S.cab.portrait.partner ? 'Сравниваем ваши ответы и готовим разбор…' : 'Отправляем ответы…');
+    api('answer', { rid: rid(), id: S.pairId, t: S.token, kind: 'portrait', answers: S.answers })
+      .then(function (r) {
+        track('submit_portrait', { done: r.done });
+        store.del(progressKey());
+        if (r.done) return showReport(r.html, 'Разбор готов и отправлен вам обоим на почту.');
+        render(
+          '<div class="center"><div class="okmark">✓</div><h2>Готово!</h2>' +
+          '<p>' + esc(S.cab.namePartner) + ' получит письмо с приглашением ответить. Как только это случится, разбор придёт вам обоим.</p>' + mailNote() +
+          '<p><a class="btn ghost" href="' + cabHref() + '">В кабинет пары</a></p></div>' +
+          '<h2 style="margin-top:32px">Ваш личный портрет</h2>' +
+          '<div class="paper">' + CQA.portraitHtml({ name: S.cab.nameMe, answers: S.answers }) + '</div>'
+        );
+      })
+      .catch(function (e) { errorScreen(e.message === NO_REPLY ? 'Сервер не успел ответить. Откройте кабинет пары через пару минут — если ответы приняты, это будет видно там.' : e.message, cabHref()); });
+  }
+
+  function cabinetCta() {
+    if (!S.pairId || !S.token) return '';
+    return '<div class="panel cab-cta"><h3>Продолжите разговор</h3><p>В кабинете пары — темы для глубоких разговоров: детство и семья, начало ваших отношений, мечты, страхи. Каждый новый разбор учитывает этот портрет.</p>' +
+      '<a class="btn" href="' + cabHref() + '">Открыть кабинет пары</a></div>';
+  }
   function showReport(html, note) {
-    render((note ? '<div class="center"><div class="okmark">✓</div><p>' + esc(note) + '</p></div>' : '') + '<div class="paper">' + html + '</div>' +
-      '<div class="center" style="margin-top:28px"><p class="sub">Хотите пройти тест с кем-то ещё или повторить через пару месяцев?</p><a class="btn ghost" href="./">Пройти тест заново</a></div>');
+    render((note ? '<div class="center"><div class="okmark">✓</div><p>' + esc(note) + '</p></div>' : '') + '<div class="paper">' + html + '</div>' + cabinetCta() +
+      '<div class="center" style="margin-top:28px"><p class="sub">Хотите пройти тест с кем-то ещё или повторить через пару месяцев?</p><a class="btn ghost" href="./">На главную</a></div>');
   }
 
   function reportView() {
@@ -346,52 +500,373 @@
       .catch(function (e) { errorScreen(e.message === 'not_ready' ? 'Партнёр ещё не ответил — разбор появится, как только это произойдёт.' : e.message === 'not_found' ? 'Разбор не найден. Проверьте ссылку из письма.' : e.message); });
   }
 
+  // ───────────────────────── кабинет пары
+  function cabinet() {
+    spinner('Открываем кабинет пары…');
+    api('cabinet', { id: S.pairId, t: S.token }).then(function (r) {
+      S.cab = r; S.role = r.me; S.ctx = 'cabinet';
+      store.set('cq_cab', { id: S.pairId, t: S.token, me: r.nameMe, partner: r.namePartner });
+      var tp = params.get('topic'), go = params.get('go');
+      if (tp && CQT.topic(tp)) return openTopic(tp);
+      if (go === 'portrait' && !r.portrait.me) return portraitIntro();
+      cabinetView();
+    }).catch(function (e) { errorScreen(e.message === 'not_found' ? 'Кабинет не найден. Проверьте ссылку из письма.' : e.message); });
+  }
+
+  function cabinetView() {
+    var c = S.cab, pt = c.portrait;
+    track('view_cabinet');
+    var pState = pt.done ? '<span class="chip good">Разбор готов</span>' : pt.me ? '<span class="chip">Ждём ответа партнёра</span>' : pt.partner ? '<span class="chip accent">Ваша очередь</span>' : '';
+    var pBtn = pt.done ? '<a class="btn small ghost" href="?r=' + encodeURIComponent(S.pairId) + '&t=' + encodeURIComponent(S.token) + '">Открыть разбор</a>'
+      : pt.me ? '' : '<button class="btn small" id="portrait">' + (pt.partner ? 'Ответить' : 'Пройти') + '</button>';
+    var doneTopics = CQT.topics.filter(function (t) { return c.topics[t.id] && c.topics[t.id].done; }).length;
+    render(
+      '<section class="hero cab-hero">' +
+        '<p class="eyebrow">Кабинет пары' + (DEMO ? '<span class="demo-badge">демо-режим</span>' : '') + '</p>' +
+        '<h1><span class="a">' + esc(c.nameMe) + '</span> &amp; <span class="b">' + esc(c.namePartner) + '</span></h1>' +
+        '<p class="lead">Выберите, о чём хотите поговорить сегодня. Каждый новый разбор учитывает ваш портрет и все темы, которые вы уже прошли вдвоём' +
+          (doneTopics || pt.done ? ' — сейчас это ' + [pt.done ? 'портрет' : '', doneTopics ? doneTopics + ' ' + plural(doneTopics, 'тема', 'темы', 'тем') : ''].filter(Boolean).join(' и ') : '') + '.</p>' +
+      '</section>' +
+      '<div class="topic-card wide' + (pt.partner && !pt.me ? ' hot' : '') + '"><div class="topic-top"><h3>Портрет пары</h3>' + pState + '</div>' +
+        '<p>' + QS.length + ' вопроса об общении, конфликтах, быте, деньгах, близости и будущем — основа для всех разговоров.</p>' +
+        '<div class="topic-foot"><small>≈ 10 минут</small>' + pBtn + '</div></div>' +
+      '<h2>Разговоры</h2>' +
+      topicGrid(c.topics) +
+      '<p class="note">Ответы партнёра вы увидите, только когда ответите оба. Эта страница открывается по личной ссылке из письма — не пересылайте её посторонним.</p>'
+    );
+    on('#portrait', 'click', function () { portraitIntro(); });
+    bindTopicGrid(openTopic);
+  }
+  function plural(n, one, few, many) {
+    var m10 = n % 10, m100 = n % 100;
+    return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many;
+  }
+
+  function openTopic(id) {
+    var st = S.cab && S.cab.topics[id] || {};
+    var t = CQT.topic(id);
+    if (st.done) {
+      spinner('Загружаем разбор…');
+      return api('talk', { id: S.pairId, t: S.token, topic: id })
+        .then(function (r) { track('view_talk', { topic: id }); showTalk(r.html, t); })
+        .catch(function (e) { errorScreen(e.message, cabHref()); });
+    }
+    if (st.me) {
+      return render('<p class="crumbs"><a href="' + cabHref() + '">← Кабинет пары</a></p>' +
+        '<div class="panel center"><div class="okmark">✓</div><h2>' + esc(t.title) + '</h2><p>Вы уже ответили. Как только ' + esc(S.cab.namePartner) + ' ответит, разбор и план разговора придут вам обоим на почту.</p>' +
+        '<a class="btn ghost" href="' + cabHref() + '">Выбрать другую тему</a></div>');
+    }
+    topicIntro(id);
+  }
+
+  function showTalk(html, t, note) {
+    render('<p class="crumbs"><a href="' + cabHref() + '">← Кабинет пары</a></p>' +
+      (note ? '<div class="center"><div class="okmark">✓</div><p>' + esc(note) + '</p></div>' : '') +
+      '<div class="paper">' + html + '</div>' +
+      '<div class="center" style="margin-top:28px"><p class="sub">Поговорили? Выберите следующую тему, когда будете готовы.</p><a class="btn" href="' + cabHref() + '">Другие темы</a></div>');
+  }
+
+  // ───────────────────────── тема: вопросы, догадки, фраза партнёру
+  var T = null;
+  function topicKey(id) { return 'cq_topic_' + (S.ctx === 'cabinet' ? S.token : 'new') + '_' + id; }
+  function saveTopic() { store.set(topicKey(T.topic.id), { a: T.a, g: T.g, note: T.note, idx: T.idx, nameSelf: T.nameSelf, namePartner: T.namePartner }); }
+  function steps(topic) {
+    var out = [];
+    topic.questions.forEach(function (q, i) {
+      out.push({ q: q, i: i, guess: false });
+      if (q.guess) out.push({ q: q, i: i, guess: true });
+    });
+    return out;
+  }
+
+  function topicIntro(id) {
+    var topic = CQT.topic(id), saved = store.get(topicKey(id)), isNew = S.ctx !== 'cabinet';
+    var contact = store.get('cq_contact') || {};
+    var n = saved && saved.a ? Object.keys(saved.a).length : 0;
+    var partner = isNew ? 'партнёр' : S.cab.namePartner;
+    var partnerAnswered = !isNew && S.cab.topics[id] && S.cab.topics[id].partner;
+    track('topic_open', { topic: id });
+    render(
+      '<p class="crumbs"><a href="' + (isNew ? './' : cabHref()) + '">← ' + (isNew ? 'На главную' : 'Кабинет пары') + '</a></p>' +
+      '<section class="hero">' +
+        '<p class="eyebrow">Разговор · ≈ ' + topic.minutes + ' минут</p>' +
+        '<h1>' + esc(topic.title) + '</h1>' +
+        '<p class="lead">' + esc(topic.intro) + '</p>' +
+      '</section>' +
+      (partnerAnswered ? '<p class="note accent-note">' + esc(partner) + ' уже ответил(а) на эту тему. Ваша очередь — после этого разбор придёт вам обоим.</p>' : '') +
+      '<ul class="howto">' +
+        '<li><b>Отвечайте за себя.</b> Можно выбрать до двух вариантов, любой вопрос — пропустить.</li>' +
+        '<li><b>Угадайте партнёра.</b> На ' + topic.questions.filter(function (q) { return q.guess; }).length + ' вопросах нужно предположить, что ответит ' + esc(partner) + '.</li>' +
+        '<li><b>Получите план разговора.</b> Разбор покажет, где вы угадали друг друга, свяжет ответы с прошлыми темами и предложит вопросы на вечер.</li>' +
+      '</ul>' +
+      (isNew
+        ? '<form class="panel" id="names" novalidate><div class="grid2">' +
+            field('nameSelf', 'Ваше имя', 'text', saved && saved.nameSelf || contact.nameSelf || '', 'given-name') +
+            field('namePartner', 'Имя партнёра', 'text', saved && saved.namePartner || '', 'off') +
+          '</div><p class="error" id="err" hidden></p>' + topicCta(n, topic) + '</form>'
+        : topicCta(n, topic))
+    );
+    function begin(fresh) {
+      var nameSelf = isNew ? ($('[name=nameSelf]').value || '').trim() : S.cab.nameMe;
+      var namePartner = isNew ? ($('[name=namePartner]').value || '').trim() : S.cab.namePartner;
+      if (isNew && (!nameSelf || !namePartner)) { var e = $('#err'); e.textContent = 'Укажите оба имени — они нужны для вопросов-догадок.'; e.hidden = false; return; }
+      if (fresh) store.del(topicKey(id));
+      var sv = fresh ? null : store.get(topicKey(id));
+      T = { topic: topic, steps: steps(topic), a: sv && sv.a || {}, g: sv && sv.g || {}, note: sv && sv.note || '', idx: sv && sv.idx || 0, nameSelf: nameSelf, namePartner: namePartner };
+      track('topic_start', { topic: id, restart: !!fresh });
+      topicStep();
+    }
+    if (isNew) on('#names', 'submit', function (e) { e.preventDefault(); begin(false); });
+    on('#go', 'click', function (e) { e.preventDefault(); begin(false); });
+    on('#restart', 'click', function (e) { e.preventDefault(); begin(true); });
+  }
+  function topicCta(n, topic) {
+    if (!n) return '<div class="cta"><button class="btn" id="go">Начать</button><small>' + topic.questions.length + ' вопросов</small></div>';
+    return '<div class="cta"><button class="btn" id="go">Продолжить</button><button class="btn ghost" type="button" id="restart">Начать заново</button>' +
+      '<small>Сохранены ответы: ' + n + ' из ' + topic.questions.length + '</small></div>';
+  }
+
+  function topicStep() {
+    var st = T.steps;
+    // Догадку пропущенного вопроса не задаём
+    while (T.idx < st.length && st[T.idx].guess && !T.a[st[T.idx].q.id]) T.idx++;
+    if (T.idx >= st.length) return topicNote();
+    var s = st[T.idx], q = s.q, total = T.topic.questions.length;
+    var layer = CQ_TOPICS.layers[q.layer] || '';
+    questionScreen({
+      head: '<div class="quiz-head"><span><b>' + esc(T.topic.title) + '</b> · ' + esc(layer) + '</span><span>' + (s.i + 1) + ' / ' + total + '</span></div>',
+      pct: Math.round(100 * T.idx / st.length),
+      kicker: s.guess ? 'А что ответит <b>' + esc(T.namePartner) + '</b>? Угадайте' : '',
+      guess: s.guess, text: q.text, q: q,
+      sel: s.guess ? T.g[q.id] : T.a[q.id],
+      onBack: T.idx > 0 ? function () {
+        T.idx--;
+        while (T.idx > 0 && st[T.idx].guess && !T.a[st[T.idx].q.id]) T.idx--;
+        saveTopic(); topicStep();
+      } : null,
+      onSkip: s.guess ? null : function () {
+        delete T.a[q.id]; delete T.g[q.id];
+        T.idx++; saveTopic(); topicStep();
+      },
+      onDone: function (keys) {
+        if (s.guess) T.g[q.id] = store1(q, keys); else T.a[q.id] = store1(q, keys);
+        T.idx++; saveTopic(); topicStep();
+      }
+    });
+  }
+
+  function topicNote() {
+    var isNew = S.ctx !== 'cabinet', topic = T.topic;
+    var answered = Object.keys(T.a).length, need = Math.ceil(topic.questions.length / 2);
+    var contact = store.get('cq_contact') || {};
+    var partnerDone = !isNew && S.cab.topics[topic.id] && S.cab.topics[topic.id].partner;
+    track('topic_note_view', { topic: topic.id });
+    render(
+      '<div class="quiz-head"><span><b>' + esc(topic.title) + '</b></span><span>Почти готово</span></div>' + progressBar(100) +
+      '<form class="panel" id="f" novalidate>' +
+        '<h2>Одна фраза для партнёра</h2>' +
+        '<p class="sub">Необязательно. То, что давно хотелось сказать по этой теме, — ' + esc(T.namePartner) + ' увидит фразу в разборе.</p>' +
+        '<label class="field"><textarea name="note" rows="3" maxlength="300" placeholder="Например: «Спасибо, что ты рядом, даже когда мне трудно говорить»">' + esc(T.note) + '</textarea></label>' +
+        (isNew ? '<div class="grid2">' +
+            field('emailSelf', 'Ваш email', 'email', contact.emailSelf || '', 'email') +
+            field('emailPartner', 'Email: ' + esc(T.namePartner), 'email', '', 'off') +
+          '</div><p class="sub">Вам придёт ссылка на кабинет пары, а ' + esc(T.namePartner) + ' получит приглашение ответить на эту тему.</p>' : '') +
+        '<label class="hp" aria-hidden="true">Сайт<input name="website" tabindex="-1" autocomplete="off"></label>' +
+        CONSENT +
+        '<p class="error" id="err"' + (answered < need ? '' : ' hidden') + '>' + (answered < need ? 'Ответьте хотя бы на ' + need + ' вопросов из ' + topic.questions.length + ' — сейчас ' + answered + '.' : '') + '</p>' +
+        '<button class="btn block" type="submit">' + (partnerDone ? 'Получить разбор' : 'Отправить') + '</button>' +
+        '<div class="quiz-nav" style="margin-top:8px"><button class="link" type="button" id="back">← Вернуться к вопросам</button><span></span></div>' +
+      '</form>'
+    );
+    on('[name=note]', 'input', function (e) { T.note = e.target.value; saveTopic(); });
+    on('#back', 'click', function () {
+      T.idx = T.steps.length - 1;
+      // к первому пропущенному вопросу, если ответов мало
+      if (Object.keys(T.a).length < need) T.idx = T.steps.findIndex(function (s) { return !s.guess && !T.a[s.q.id]; });
+      saveTopic(); topicStep();
+    });
+    on('#f', 'submit', function (e) {
+      e.preventDefault();
+      var f = e.target, v = function (n) { return (f.elements[n] && f.elements[n].value || '').trim(); };
+      var err = $('#err');
+      function fail(m) { err.textContent = m; err.hidden = false; }
+      if (Object.keys(T.a).length < need) return fail('Ответьте хотя бы на ' + need + ' вопросов из ' + topic.questions.length + '.');
+      if (isNew) {
+        if (!emailRe.test(v('emailSelf'))) return fail('Проверьте ваш email.');
+        if (!emailRe.test(v('emailPartner'))) return fail('Проверьте email партнёра.');
+        if (v('emailPartner').toLowerCase() === v('emailSelf').toLowerCase()) return fail('Email партнёра должен отличаться от вашего.');
+      }
+      if (!f.elements.consent.checked) return fail('Подтвердите согласие, чтобы продолжить.');
+      if (v('website')) return;
+      T.note = v('note');
+      if (isNew) {
+        store.set('cq_contact', { nameSelf: T.nameSelf, emailSelf: v('emailSelf') });
+        submitStart(v('emailSelf'), v('emailPartner'));
+      } else submitTopic();
+    });
+  }
+
+  function topicPayload() { return { answers: T.a, guesses: T.g, note: T.note }; }
+
+  function submitStart(emailA, emailB) {
+    var topic = T.topic;
+    spinner('Отправляем ответы и приглашение…');
+    api('start', Object.assign({ rid: rid(), topic: topic.id, nameA: T.nameSelf, emailA: emailA, nameB: T.namePartner, emailB: emailB, meta: { utm: utm, sid: sid } }, topicPayload()))
+      .then(function (r) {
+        track('topic_submit', { topic: topic.id, ctx: 'new' });
+        store.del(topicKey(topic.id));
+        S.pairId = r.id; S.token = r.t;
+        store.set('cq_cab', { id: r.id, t: r.t, me: T.nameSelf, partner: T.namePartner });
+        render('<div class="panel center"><div class="okmark">✓</div><h2>Готово!</h2>' +
+          '<p><b>' + esc(T.namePartner) + '</b> получит приглашение на ' + esc(emailB) + '. Как только ответы будут у обоих, разбор и план разговора придут вам на почту.</p>' +
+          '<p>Ссылку на ваш кабинет пары мы отправили на <b>' + esc(emailA) + '</b>. Там можно выбрать следующую тему или пройти портрет пары.</p>' + mailNote() +
+          '<a class="btn" href="' + cabHref() + '">Открыть кабинет пары</a></div>');
+      })
+      .catch(function (e) { errorScreen(e.message === NO_REPLY ? lostReply(emailA) : e.message); });
+  }
+
+  function submitTopic() {
+    var topic = T.topic, partnerDone = S.cab.topics[topic.id] && S.cab.topics[topic.id].partner;
+    spinner(partnerDone ? 'Сравниваем ответы и готовим разбор…' : 'Отправляем ответы…');
+    api('answer', Object.assign({ rid: rid(), id: S.pairId, t: S.token, kind: topic.id }, topicPayload()))
+      .then(function (r) {
+        track('topic_submit', { topic: topic.id, ctx: 'cabinet', done: r.done });
+        store.del(topicKey(topic.id));
+        if (r.done) return showTalk(r.html, topic, 'Разбор готов и отправлен вам обоим на почту.');
+        render('<p class="crumbs"><a href="' + cabHref() + '">← Кабинет пары</a></p>' +
+          '<div class="panel center"><div class="okmark">✓</div><h2>Готово!</h2>' +
+          '<p>' + esc(S.cab.namePartner) + ' получит письмо с приглашением ответить на тему ' + esc(CQT.quoted(topic.title)) + '. Как только это случится, разбор и план разговора придут вам обоим.</p>' + mailNote() +
+          '<a class="btn ghost" href="' + cabHref() + '">Выбрать ещё тему</a></div>');
+      })
+      .catch(function (e) { errorScreen(e.message === NO_REPLY ? 'Сервер не успел ответить. Откройте кабинет пары через пару минут — если ответы приняты, это будет видно там.' : e.message, cabHref()); });
+  }
+
   // ───────────────────────── демо-бэкенд (localStorage) — для проверки без Apps Script
+  // Повторяет логику backend/Code.gs.
   var Demo = {
     pairs: function () { return store.get('cq_demo_pairs') || {}; },
-    save: function (p) { store.set('cq_demo_pairs', p); },
+    save: function (p) { var all = Demo.pairs(); all[p.id] = p; store.set('cq_demo_pairs', all); },
     mails: function () { return store.get('cq_demo_mail') || []; },
-    send: function (to, m) { var l = Demo.mails(); l.unshift({ to: to, subject: m.subject, html: m.html, at: new Date().toLocaleTimeString('ru') }); store.set('cq_demo_mail', l.slice(0, 30)); DemoUI.refresh(); },
+    send: function (to, m) { var l = Demo.mails(); l.unshift({ to: to, subject: m.subject, html: m.html, at: new Date().toLocaleTimeString('ru') }); store.set('cq_demo_mail', l.slice(0, 40)); DemoUI.refresh(); },
     rnd: function () { return Math.random().toString(36).slice(2, 10); },
     base: function () { return location.origin + location.pathname; },
+    cab: function (p, who) { return Demo.base() + '?c=' + p.id + '&t=' + p['t' + who]; },
     call: function (d) {
       return new Promise(function (resolve, reject) {
         setTimeout(function () {
           try { resolve(Demo[d.action](d)); } catch (e) { reject(e); }
-        }, 500);
+        }, 400);
       });
-    },
-    create: function (d) {
-      var all = Demo.pairs(), id = Demo.rnd();
-      var p = { id: id, tA: Demo.rnd(), tB: Demo.rnd(), A: { name: d.nameA, email: d.emailA, answers: d.answers }, B: { name: d.nameB, email: d.emailB } };
-      all[id] = p; Demo.save(all);
-      Demo.send(d.emailA, CQA.mail.initiator(p.A, p.B));
-      Demo.send(d.emailB, CQA.mail.invite(p.A, p.B, Demo.base() + '?p=' + id + '&t=' + p.tB));
-      return { ok: true, id: id };
     },
     find: function (d) {
       var p = Demo.pairs()[d.id];
       if (!p || (d.t !== p.tA && d.t !== p.tB)) throw new Error('not_found');
+      p.talks = p.talks || {};
       return p;
+    },
+    role: function (p, t) { return t === p.tA ? 'A' : 'B'; },
+    cleanPortrait: function (a) {
+      var out = {};
+      QS.forEach(function (q) { var v = CQT.cleanKeys(q, a && a[q.id]); if (v) out[q.id] = v; });
+      return out;
+    },
+    newPair: function (d) {
+      if (d.emailA.toLowerCase() === d.emailB.toLowerCase()) throw new Error('Email партнёра должен отличаться от вашего.');
+      return { id: Demo.rnd(), tA: Demo.rnd(), tB: Demo.rnd(), A: { name: d.nameA, email: d.emailA }, B: { name: d.nameB, email: d.emailB }, talks: {} };
+    },
+    create: function (d) {
+      var p = Demo.newPair(d);
+      p.A.answers = Demo.cleanPortrait(d.answers);
+      Demo.save(p);
+      Demo.send(d.emailA, CQA.mail.initiator(p.A, p.B, Demo.cab(p, 'A')));
+      Demo.send(d.emailB, CQA.mail.invite(p.A, p.B, Demo.base() + '?p=' + p.id + '&t=' + p.tB));
+      return { ok: true, id: p.id, t: p.tA };
+    },
+    start: function (d) {
+      var topic = CQT.topic(d.topic), p = Demo.newPair(d);
+      p.talks[topic.id] = { A: CQT.cleanTopic(topic, d) };
+      Demo.save(p);
+      Demo.send(d.emailA, CQT.mail.topicStarted(p.A, p.B, topic, Demo.cab(p, 'A')));
+      Demo.send(d.emailB, CQT.mail.topicInvite(p.A, p.B, topic, Demo.cab(p, 'B') + '&topic=' + topic.id));
+      return { ok: true, id: p.id, t: p.tA };
     },
     invite: function (d) {
       var p = Demo.find(d);
-      return { ok: true, nameA: p.A.name, nameB: p.B.name, emailB: p.B.email, completed: !!p.B.answers };
+      if (d.t !== p.tB || !p.A.answers) throw new Error('not_found');
+      return { ok: true, nameA: p.A.name, nameB: p.B.name, emailB: p.B.email, completed: !!p.completed };
+    },
+    portraitDone: function (p) {
+      var r = CQA.report(p.A, p.B);
+      p.completed = true; Demo.save(p);
+      Demo.send(p.A.email, CQA.mail.result(p.A, p.B, r.html, Demo.base() + '?r=' + p.id + '&t=' + p.tA, p.A.name, Demo.cab(p, 'A')));
+      Demo.send(p.B.email, CQA.mail.result(p.A, p.B, r.html, Demo.base() + '?r=' + p.id + '&t=' + p.tB, p.B.name, Demo.cab(p, 'B')));
+      return r.html;
     },
     complete: function (d) {
-      var all = Demo.pairs(), p = Demo.find(d);
-      if (p.B.answers) throw new Error('already_completed');
-      p.B = { name: d.nameB, email: d.emailB, answers: d.answers };
-      all[p.id] = p; Demo.save(all);
-      var r = CQA.report(p.A, p.B);
-      Demo.send(p.A.email, CQA.mail.result(p.A, p.B, r.html, Demo.base() + '?r=' + p.id + '&t=' + p.tA, p.A.name));
-      Demo.send(p.B.email, CQA.mail.result(p.A, p.B, r.html, Demo.base() + '?r=' + p.id + '&t=' + p.tB, p.B.name));
-      return { ok: true, html: r.html };
+      var p = Demo.find(d);
+      if (p.completed) throw new Error('already_completed');
+      p.B = { name: d.nameB, email: d.emailB, answers: Demo.cleanPortrait(d.answers) };
+      return { ok: true, html: Demo.portraitDone(p) };
     },
     report: function (d) {
       var p = Demo.find(d);
-      if (!p.B.answers) throw new Error('not_ready');
+      if (!p.completed) throw new Error('not_ready');
       return { ok: true, html: CQA.report(p.A, p.B).html };
+    },
+    cabinet: function (d) {
+      var p = Demo.find(d), me = Demo.role(p, d.t), other = me === 'A' ? 'B' : 'A', topics = {};
+      Object.keys(p.talks).forEach(function (k) { var s = p.talks[k]; topics[k] = { me: !!s[me], partner: !!s[other], done: !!s.completed }; });
+      return { ok: true, me: me, nameMe: p[me].name, namePartner: p[other].name, emailMe: p[me].email,
+        portrait: { me: !!p[me].answers, partner: !!p[other].answers, done: !!p.completed }, topics: topics };
+    },
+    talkReport: function (p, id) {
+      var mods = [], allA = {}, allB = {};
+      function merge(dst, src) { Object.keys(src || {}).forEach(function (k) { dst[k] = src[k]; }); }
+      if (p.completed) { mods.push('portrait'); merge(allA, p.A.answers); merge(allB, p.B.answers); }
+      Object.keys(p.talks).forEach(function (k) {
+        if (k === id || !p.talks[k].completed) return;
+        mods.push(k); merge(allA, p.talks[k].A.a); merge(allB, p.talks[k].B.a);
+      });
+      var s = p.talks[id];
+      merge(allA, s.A.a); merge(allB, s.B.a);
+      var X = { name: p.A.name, email: p.A.email, a: s.A.a, g: s.A.g, note: s.A.note, all: allA };
+      var Y = { name: p.B.name, email: p.B.email, a: s.B.a, g: s.B.g, note: s.B.note, all: allB };
+      var r = CQT.report(id, X, Y, { mods: mods });
+      r.X = X; r.Y = Y;
+      return r;
+    },
+    answer: function (d) {
+      var p = Demo.find(d), me = Demo.role(p, d.t), other = me === 'A' ? 'B' : 'A';
+      if (d.kind === 'portrait') {
+        if (p[me].answers) return p.completed ? { ok: true, done: true, html: CQA.report(p.A, p.B).html } : { ok: true, done: false };
+        p[me].answers = Demo.cleanPortrait(d.answers);
+        if (!p[other].answers) {
+          Demo.save(p);
+          Demo.send(p[other].email, CQT.mail.portraitInvite(p[me], p[other], Demo.cab(p, other) + '&go=portrait'));
+          return { ok: true, done: false };
+        }
+        return { ok: true, done: true, html: Demo.portraitDone(p) };
+      }
+      var topic = CQT.topic(d.kind);
+      if (!topic) throw new Error('bad_topic');
+      var s = p.talks[topic.id] || (p.talks[topic.id] = {});
+      if (s[me]) return s.completed ? { ok: true, done: true, html: Demo.talkReport(p, topic.id).html } : { ok: true, done: false };
+      s[me] = CQT.cleanTopic(topic, d);
+      if (!s[other]) {
+        Demo.save(p);
+        Demo.send(p[other].email, CQT.mail.topicInvite(p[me], p[other], topic, Demo.cab(p, other) + '&topic=' + topic.id));
+        return { ok: true, done: false };
+      }
+      s.completed = true; Demo.save(p);
+      var r = Demo.talkReport(p, topic.id);
+      Demo.send(p.A.email, CQT.mail.topicResult(r.X, r.Y, topic, r.html, Demo.cab(p, 'A') + '&topic=' + topic.id, p.A.name));
+      Demo.send(p.B.email, CQT.mail.topicResult(r.X, r.Y, topic, r.html, Demo.cab(p, 'B') + '&topic=' + topic.id, p.B.name));
+      return { ok: true, done: true, html: r.html };
+    },
+    talk: function (d) {
+      var p = Demo.find(d), s = p.talks[d.topic];
+      if (!s || !s.completed) throw new Error('not_ready');
+      return { ok: true, html: Demo.talkReport(p, d.topic).html };
     }
   };
 
@@ -424,7 +899,7 @@
         var t = e.target.closest('[data-i],[data-close],[data-clear],[data-back]');
         if (e.target === m || (t && t.hasAttribute('data-close'))) return m.remove();
         if (!t) return;
-        if (t.hasAttribute('data-clear')) { store.del('cq_demo_mail'); store.del('cq_demo_pairs'); m.remove(); DemoUI.refresh(); return; }
+        if (t.hasAttribute('data-clear')) { ['cq_demo_mail', 'cq_demo_pairs', 'cq_cab'].forEach(store.del); m.remove(); DemoUI.refresh(); return; }
         if (t.hasAttribute('data-back')) { m.remove(); DemoUI.open(); return; }
         var x = mails[+t.getAttribute('data-i')];
         m.querySelector('.modal-head b').textContent = x.subject;
@@ -439,8 +914,11 @@
 
   // ───────────────────────── маршрутизация
   DemoUI.init();
-  if (params.get('p') && params.get('t')) {
-    S.role = 'B'; S.pairId = params.get('p'); S.token = params.get('t');
+  if (params.get('c') && params.get('t')) {
+    S.pairId = params.get('c'); S.token = params.get('t'); S.ctx = 'cabinet';
+    cabinet();
+  } else if (params.get('p') && params.get('t')) {
+    S.role = 'B'; S.ctx = 'invite'; S.pairId = params.get('p'); S.token = params.get('t');
     inviteLanding();
   } else if (params.get('r') && params.get('t')) {
     S.pairId = params.get('r'); S.token = params.get('t');
