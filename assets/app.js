@@ -195,7 +195,7 @@
         else label = 'Начать';
       }
       return '<div class="topic-card' + (st.partner && !st.me ? ' hot' : '') + '"><div class="topic-top"><h3>' + esc(t.title) + '</h3>' + chip + '</div>' +
-        '<p>' + esc(t.lead) + '</p><div class="topic-foot"><small>' + t.questions.length + ' вопросов · ≈ ' + t.minutes + ' мин' + (t.deep ? ' · глубокая' : '') + '</small>' +
+        '<p>' + esc(t.lead) + '</p><div class="topic-foot"><small>' + t.questions.length + ' вопросов · ≈ ' + t.minutes + ' мин' + (t.adult ? ' · 18+' : t.deep ? ' · глубокая' : '') + '</small>' +
         '<button class="btn small' + (st.done || st.me ? ' ghost' : '') + '" data-topic="' + t.id + '">' + label + '</button></div></div>';
     }).join('');
     var votes = store.get('cq_votes') || {};
@@ -204,7 +204,7 @@
         '<div class="topic-foot"><small>' + (votes[t.id] ? 'Спасибо! Учтём ваш голос' : 'Хотите эту тему раньше?') + '</small>' +
         (votes[t.id] ? '' : '<button class="btn small ghost" data-vote="' + t.id + '">Хочу эту тему</button>') + '</div></div>';
     }).join('');
-    return '<div class="topic-grid">' + live + '</div><h3 class="soon-h">Скоро</h3><div class="topic-grid">' + soon + '</div>';
+    return '<div class="topic-grid">' + live + '</div>' + (soon ? '<h3 class="soon-h">Скоро</h3><div class="topic-grid">' + soon + '</div>' : '');
   }
   function bindTopicGrid(open) {
     app.querySelectorAll('[data-topic]').forEach(function (b) {
@@ -485,7 +485,7 @@
 
   function cabinetCta() {
     if (!S.pairId || !S.token) return '';
-    return '<div class="panel cab-cta"><h3>Продолжите разговор</h3><p>В кабинете пары — темы для глубоких разговоров: детство и семья, начало ваших отношений, мечты, страхи. Каждый новый разбор учитывает этот портрет.</p>' +
+    return '<div class="panel cab-cta"><h3>Продолжите разговор</h3><p>В кабинете пары — 12 тем для глубоких разговоров — от детства и первых свиданий до денег, желания и пережитых кризисов. Каждый новый разбор учитывает этот портрет.</p>' +
       '<a class="btn" href="' + cabHref() + '">Открыть кабинет пары</a></div>';
   }
   function showReport(html, note) {
