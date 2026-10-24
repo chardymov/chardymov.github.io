@@ -44,10 +44,11 @@ var CQT = (function (DATA, TOP, A) {
     return String(s || '').replace(/[<>\u0000-\u0008\u000b-\u001f]/g, '').replace(/[ \t]+/g, ' ').trim().replace(/^[=+\-@]+/, '').slice(0, 300);
   }
   // Ответы на тему: { a, g, note }. Вопросы можно пропускать, но не больше половины.
-  function cleanTopic(topic, d) {
+  function cleanTopic(topic, d, pairCtx) {
     var a = {}, g = {}, n = 0;
     d = d || {};
-    topic.questions.forEach(function (q) {
+    var qs = topic.questions.filter(function (q) { return A.adapt(q, pairCtx) !== null; });
+    qs.forEach(function (q) {
       var v = cleanKeys(q, d.answers && d.answers[q.id]);
       if (v) { a[q.id] = v; n++; }
       if (q.guess && v) {
@@ -55,17 +56,20 @@ var CQT = (function (DATA, TOP, A) {
         if (gv) g[q.id] = gv;
       }
     });
-    if (n < Math.ceil(topic.questions.length / 2)) throw new Error('Ответьте, пожалуйста, хотя бы на половину вопросов.');
+    if (n < Math.ceil(qs.length / 2)) throw new Error('Ответьте, пожалуйста, хотя бы на половину вопросов.');
     return { a: a, g: g, note: cleanNote(d.note) };
   }
 
   // ───────────────────────── ответы
   function keys(map, id) { return arr(map && map[String(id)]); }
   function has(map, id, set) { return keys(map, id).some(function (k) { return set.indexOf(k) >= 0; }); }
+  // Пока строится разбор — контекст пары (вопросы и варианты показываются с учётом подстройки).
+  var CUR = null;
+  function qv(q) { return CUR ? A.adapt(q, CUR) || q : q; }
   function optText(id, ks) {
-    var q = REG[String(id)].q;
+    var q = qv(REG[String(id)].q), base = REG[String(id)].q;
     ks = arr(ks);
-    return ks.length ? ks.map(function (k) { return q.options[k]; }).join('; ') : '—';
+    return ks.length ? ks.map(function (k) { return q.options[k] || base.options[k]; }).join('; ') : '—';
   }
 
   // ───────────────────────── оси: портрет + темы
@@ -193,7 +197,7 @@ var CQT = (function (DATA, TOP, A) {
     pick.sort(function (a, b) { return LAYER_ORDER[a.q.layer] - LAYER_ORDER[b.q.layer] || a.i - b.i; });
     var list = [];
     if (topic.talks && topic.talks.length) list.push({ text: esc(topic.talks[0]), why: 'Для разогрева' });
-    pick.forEach(function (c) { list.push({ text: esc(c.q.talk), why: c.why, about: c.q.text }); });
+    pick.forEach(function (c) { list.push({ text: esc(c.q.talk), why: c.why, about: qv(c.q).text }); });
     var extra = 1;
     while (list.length < 6 && topic.talks && extra < topic.talks.length) list.push({ text: esc(topic.talks[extra++]), why: '' });
     return list;
@@ -276,7 +280,7 @@ var CQT = (function (DATA, TOP, A) {
       html += card(
         '<div style="font:400 12px/1.4 ' + FONT + ';color:' + C.muted + ';margin:0 0 4px">' + esc(TOP.layers[q.layer] || '') +
           (rt ? ' · <span style="color:' + rt[1] + '">' + rt[0] + '</span>' : '') + '</div>' +
-        '<div style="font:600 15px/1.4 ' + FONT + ';color:' + C.ink + ';margin:0 0 8px">' + esc(q.text) + '</div>' +
+        '<div style="font:600 15px/1.4 ' + FONT + ';color:' + C.ink + ';margin:0 0 8px">' + esc(qv(q).text) + '</div>' +
         line(X, x, Y, C.a) + line(Y, y, X, C.b));
     });
     return html;
@@ -302,8 +306,12 @@ var CQT = (function (DATA, TOP, A) {
 
   // ───────────────────────── разбор темы
   function report(topicId, X, Y, ctx) {
+    var prev = CUR;
+    CUR = ctx && ctx.ctx || null;
+    try { return reportInner(topicId, X, Y, ctx || {}); } finally { CUR = prev; }
+  }
+  function reportInner(topicId, X, Y, ctx) {
     var topic = TBY[topicId];
-    ctx = ctx || {};
     var mods = (ctx.mods || []).concat(topicId);
     var notes = crossNotes(topic, X, Y, mods);
     var conv = conversation(topic, X, Y);
@@ -333,7 +341,9 @@ var CQT = (function (DATA, TOP, A) {
 
   // Текстовая сводка для Claude: тема + всё, что пара уже прошла вместе.
   function reportText(topic, X, Y, notes, ctx) {
-    var L = ['Тема разговора: ' + quoted(topic.title) + ' — ' + topic.lead, 'Партнёр A: ' + A.withGender(X), 'Партнёр B: ' + A.withGender(Y), ''];
+    var L = ['Тема разговора: ' + quoted(topic.title) + ' — ' + topic.lead, 'Партнёр A: ' + A.withGender(X), 'Партнёр B: ' + A.withGender(Y)];
+    if (CUR) L.push('О паре: ' + A.contextText(CUR));
+    L.push('');
     topicLines(L, topic, X, Y, notes);
     L.push('', 'Оси по всем пройденным модулям (0 — левый полюс, 1 — правый):');
     axesLines(L, X, Y);
@@ -343,7 +353,7 @@ var CQT = (function (DATA, TOP, A) {
       L.push('', 'Ранее пройдено вдвоём — ' + modTitle(mod) + ':');
       qs.forEach(function (q) {
         var x = keys(X.all, q.id), y = keys(Y.all, q.id);
-        if (x.length || y.length) L.push('- ' + q.text + ' A: ' + optText(q.id, x) + ' | B: ' + optText(q.id, y));
+        if (x.length || y.length) L.push('- ' + qv(q).text + ' A: ' + optText(q.id, x) + ' | B: ' + optText(q.id, y));
       });
     });
     return L.join('\n');
@@ -356,7 +366,7 @@ var CQT = (function (DATA, TOP, A) {
       var x = keys(X.a, q.id), y = keys(Y.a, q.id);
       if (!x.length && !y.length) return;
       var gy = keys(Y.g, q.id), gx = keys(X.g, q.id);
-      L.push('- [' + (TOP.layers[q.layer] || '') + '] ' + q.text +
+      L.push('- [' + (TOP.layers[q.layer] || '') + '] ' + qv(q).text +
         '\n   A: ' + optText(q.id, x) + (gy.length ? ' (B предполагал(а): ' + optText(q.id, gy) + ')' : '') +
         '\n   B: ' + optText(q.id, y) + (gx.length ? ' (A предполагал(а): ' + optText(q.id, gx) + ')' : ''));
     });
@@ -377,16 +387,22 @@ var CQT = (function (DATA, TOP, A) {
   // ───────────────────────── общий разбор по всем модулям (пишет только Claude)
   // Человек: { name, gender, portrait: ответы портрета или null, topics: { id: { a, g, note } } }.
   // Берутся только модули, которые прошли оба.
-  function overallInput(PA, PB) {
+  function overallInput(PA, PB, pairCtx) {
+    var prev = CUR;
+    CUR = pairCtx || null;
+    try { return overallInner(PA, PB); } finally { CUR = prev; }
+  }
+  function overallInner(PA, PB) {
     var mods = [], allA = {}, allB = {};
     function merge(dst, src) { Object.keys(src || {}).forEach(function (k) { dst[k] = src[k]; }); }
     if (PA.portrait && PB.portrait) { mods.push('portrait'); merge(allA, PA.portrait); merge(allB, PB.portrait); }
     var done = TOPICS.filter(function (t) { return PA.topics[t.id] && PB.topics[t.id]; });
     done.forEach(function (t) { mods.push(t.id); merge(allA, PA.topics[t.id].a); merge(allB, PB.topics[t.id].a); });
-    var L = ['Партнёр A: ' + A.withGender(PA), 'Партнёр B: ' + A.withGender(PB),
-      'Пройдено вдвоём: ' + mods.map(modTitle).join(', ') + '.'];
+    var L = ['Партнёр A: ' + A.withGender(PA), 'Партнёр B: ' + A.withGender(PB)];
+    if (CUR) L.push('О паре: ' + A.contextText(CUR));
+    L.push('Пройдено вдвоём: ' + mods.map(modTitle).join(', ') + '.');
     if (mods[0] === 'portrait') {
-      var rep = A.report({ name: PA.name, gender: PA.gender, answers: PA.portrait }, { name: PB.name, gender: PB.gender, answers: PB.portrait });
+      var rep = A.report({ name: PA.name, gender: PA.gender, answers: PA.portrait }, { name: PB.name, gender: PB.gender, answers: PB.portrait }, { ctx: CUR });
       L.push('', '═══ Портрет пары', rep.text);
     }
     done.forEach(function (t) {

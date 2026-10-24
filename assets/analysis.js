@@ -50,7 +50,8 @@ var CQA = (function (DATA) {
   }
   function optText(qid, ks) {
     ks = arr(ks);
-    return ks.length ? ks.map(function (k) { return QBY[qid].options[k]; }).join('; ') : '—';
+    var q = qv(QBY[qid]);
+    return ks.length ? ks.map(function (k) { return q.options[k] || QBY[qid].options[k]; }).join('; ') : '—';
   }
   // «а», «а и б», «а, б и в»
   function joinAnd(list, sep) {
@@ -63,6 +64,66 @@ var CQA = (function (DATA) {
     list = list.filter(function (v) { return v != null; });
     return list.length ? list.reduce(function (s, v) { return s + v; }, 0) / list.length : null;
   }
+
+  // ───────────────────────── контекст пары: { rel, live, dur, kids: [...] }
+  var CTX_BY = {};
+  (DATA.context || []).forEach(function (c) { CTX_BY[c.id] = c; });
+  function kidsOf(c) { return arr(c && c.kids); }
+  var COND = {
+    together: function (c) { return c.live === 'together'; },
+    apart: function (c) { return c.live === 'apart' || c.live === 'distance'; },
+    distance: function (c) { return c.live === 'distance'; },
+    kids: function (c) { return kidsOf(c).some(function (k) { return k === 'common' || k === 'prev'; }); },
+    noKids: function (c) { return !COND.kids(c); },
+    commonKids: function (c) { return kidsOf(c).indexOf('common') >= 0; },
+    prevKids: function (c) { return kidsOf(c).indexOf('prev') >= 0; },
+    notMarried: function (c) { return !!c.rel && c.rel !== 'married'; },
+    short: function (c) { return c.dur === 'lt1' || c.dur === 'y1'; }
+  };
+  // Проверка ответов на установочные вопросы (общая для сайта и бэкенда). Неполный контекст — null.
+  function cleanContext(c) {
+    if (!c || typeof c !== 'object') return null;
+    var out = {}, ok = true;
+    (DATA.context || []).forEach(function (q) {
+      if (q.multi) {
+        var ks = arr(c[q.id]).filter(function (k) { return q.options[k]; });
+        if (ks.indexOf('none') >= 0) ks = ['none'];
+        if (!ks.length) ok = false;
+        out[q.id] = ks;
+      } else if (q.options[c[q.id]]) out[q.id] = c[q.id];
+      else ok = false;
+    });
+    return ok ? out : null;
+  }
+  function parseContext(v) {
+    if (!v) return null;
+    if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { return null; } }
+    return cleanContext(v);
+  }
+  // Вопрос с учётом пары: другой текст, другие или скрытые варианты; null — вопрос не задаём.
+  function adapt(q, c) {
+    if (!q || !q.adapt || !c) return q;
+    var out = null;
+    q.adapt.forEach(function (r) {
+      if (!COND[r.if] || !COND[r.if](c)) return;
+      if (!out) { out = {}; Object.keys(q).forEach(function (k) { out[k] = q[k]; }); out.options = {}; Object.keys(q.options).forEach(function (k) { out.options[k] = q.options[k]; }); }
+      if (r.skip) out.skip = true;
+      if (r.text) out.text = r.text;
+      if (r.options) Object.keys(r.options).forEach(function (k) { out.options[k] = r.options[k]; });
+      (r.hide || []).forEach(function (k) { delete out.options[k]; });
+    });
+    return out ? (out.skip ? null : out) : q;
+  }
+  // Описание пары одной строкой — для Claude и для кабинета.
+  function contextText(c) {
+    if (!c) return '';
+    return (DATA.context || []).map(function (q) {
+      return q.title + ': ' + arr(c[q.id]).map(function (k) { return q.options[k]; }).join(', ');
+    }).join('; ');
+  }
+  // Пока строится разбор — контекст этой пары (тексты вопросов и вариантов берутся с учётом подстройки).
+  var CUR = null;
+  function qv(q) { return CUR ? adapt(q, CUR) || q : q; }
 
   // ───────────────────────── род: «сделал(а)» → «сделал» / «сделала»
   // Человек: { name, gender: 'm' | 'f' | '' }. Пустой gender — оставляем обе формы.
@@ -580,7 +641,12 @@ var CQA = (function (DATA) {
   }
 
   // ───────────────────────── список ответов одного человека (для письма)
-  function answersHtml(P0) {
+  function answersHtml(P0, ctx) {
+    var prev = CUR;
+    CUR = ctx || null;
+    try { return answersInner(P0); } finally { CUR = prev; }
+  }
+  function answersInner(P0) {
     var html = '';
     BLOCKS.forEach(function (bl) {
       var qs = QS.filter(function (q) { return q.block === bl.id; });
@@ -588,7 +654,7 @@ var CQA = (function (DATA) {
       html += '<div style="font:600 15px/1.4 ' + FONT + ';color:' + C.accent + ';margin:20px 0 8px">Блок ' + bl.n + '. ' + esc(bl.title) + '</div>';
       if (!any) { html += muted('Блок пропущен.'); return; }
       qs.forEach(function (q) {
-        html += '<div style="margin:0 0 10px"><div style="font:400 14px/1.45 ' + FONT + ';color:' + C.muted + '">' + q.id + '. ' + esc(q.text) + '</div>' +
+        html += '<div style="margin:0 0 10px"><div style="font:400 14px/1.45 ' + FONT + ';color:' + C.muted + '">' + q.id + '. ' + esc(qv(q).text) + '</div>' +
           '<div style="font:500 15px/1.45 ' + FONT + ';color:' + C.ink + '">' + esc(optText(q.id, keys(P0, q.id))) + '</div></div>';
       });
     });
@@ -611,8 +677,14 @@ var CQA = (function (DATA) {
     return 'Вы очень разные почти во всех блоках. Это повод для серьёзного, бережного разговора — возможно, с помощью семейного психолога, который поможет найти общий язык.';
   }
 
+  // opts.ctx — контекст пары (тексты вопросов показываются с учётом подстройки).
   function report(A, B, opts) {
     opts = opts || {};
+    var prev = CUR;
+    CUR = opts.ctx || null;
+    try { return reportInner(A, B, opts); } finally { CUR = prev; }
+  }
+  function reportInner(A, B, opts) {
     var cmp = compare(A, B), dyn = dynamics(A, B), html = '';
     var sexBoth = hasBlock(A, 'sex') && hasBlock(B, 'sex');
 
@@ -665,7 +737,7 @@ var CQA = (function (DATA) {
       if (supports.length) {
         html += card('<div style="font:600 15px/1.4 ' + FONT + ';color:' + C.ink + ';margin:0 0 8px">Вы ответили одинаково</div>' +
           supports.map(function (it) {
-            return '<div style="margin:0 0 8px;font:400 14px/1.45 ' + FONT + ';color:' + C.ink + '"><span style="color:' + C.muted + '">' + esc(it.q.text) + '</span> ' + esc(optText(it.q.id, it.x)) + '</div>';
+            return '<div style="margin:0 0 8px;font:400 14px/1.45 ' + FONT + ';color:' + C.ink + '"><span style="color:' + C.muted + '">' + esc(qv(it.q).text) + '</span> ' + esc(optText(it.q.id, it.x)) + '</div>';
           }).join('') + muted('Совпадения тоже стоит отметить вслух — это то, на что можно опираться в трудные моменты.'));
       }
     }
@@ -682,7 +754,7 @@ var CQA = (function (DATA) {
         var tag = it.rel === 'opposite' ? '<span style="color:' + C.bad + '">противоположно</span>' : '<span style="color:' + C.warn + '">по-разному</span>';
         return card(
           '<div style="font:400 12px/1.4 ' + FONT + ';color:' + C.muted + ';margin:0 0 4px">' + esc(BBY[it.q.block].title) + ' · ' + tag + '</div>' +
-          '<div style="font:600 15px/1.4 ' + FONT + ';color:' + C.ink + ';margin:0 0 8px">' + esc(it.q.text) + '</div>' +
+          '<div style="font:600 15px/1.4 ' + FONT + ';color:' + C.ink + ';margin:0 0 8px">' + esc(qv(it.q).text) + '</div>' +
           '<div style="font:400 14px/1.5 ' + FONT + ';margin:0 0 2px"><b style="color:' + C.a + '">' + esc(A.name) + ':</b> ' + esc(optText(it.q.id, it.x)) + '</div>' +
           '<div style="font:400 14px/1.5 ' + FONT + ';margin:0 0 8px"><b style="color:' + C.b + '">' + esc(B.name) + ':</b> ' + esc(optText(it.q.id, it.y)) + '</div>' +
           '<div style="font:400 14px/1.5 ' + FONT + ';color:' + C.muted + '">' + esc(it.q.tip) + '</div>');
@@ -712,11 +784,13 @@ var CQA = (function (DATA) {
 
   // Текстовая сводка для Claude (и для логов)
   function reportText(A, B, cmp, dyn) {
-    var lines = ['Партнёр A: ' + withGender(A), 'Партнёр B: ' + withGender(B), 'Индекс согласованности: ' + cmp.score + '%', '', 'Ответы:'];
+    var lines = ['Партнёр A: ' + withGender(A), 'Партнёр B: ' + withGender(B)];
+    if (CUR) lines.push('О паре: ' + contextText(CUR));
+    lines.push('Индекс согласованности: ' + cmp.score + '%', '', 'Ответы:');
     QS.forEach(function (q) {
       var x = keys(A, q.id), y = keys(B, q.id);
       if (!x.length && !y.length) return;
-      lines.push(q.id + '. [' + BBY[q.block].title + '] ' + q.text + '\n   A: ' + optText(q.id, x) + '\n   B: ' + optText(q.id, y));
+      lines.push(q.id + '. [' + BBY[q.block].title + '] ' + qv(q).text + '\n   A: ' + optText(q.id, x) + '\n   B: ' + optText(q.id, y));
     });
     lines.push('', 'Найденные динамики:');
     dyn.forEach(function (d) { lines.push('- (' + d.level + ') ' + d.title + ': ' + plain(d.text)); });
@@ -744,12 +818,12 @@ var CQA = (function (DATA) {
   var FOOT = 'Это письмо отправлено, потому что кто-то указал ваш адрес в тесте для пар. Если это ошибка — просто проигнорируйте его.';
   var mail = {
     // Письмо тому, кто заполнил первым: его ответы + личный портрет
-    initiator: function (A, B, cabLink) {
+    initiator: function (A, B, cabLink, ctx) {
       var html = '<div style="font:600 22px/1.3 ' + FONT + ';color:' + C.ink + ';margin:0 0 12px">' + esc(A.name) + ', спасибо за ответы!</div>' +
         p('Мы отправили приглашение партнёру — <b>' + esc(B.name) + '</b> (' + esc(B.email) + '). Как только ' + esc(B.name) + ' ответит на вопросы, вы оба получите на почту общий разбор: портреты, ваши опоры, зоны договорённостей и рекомендации.') +
         h2('Ваш личный портрет') + portraitHtml(A) +
         cabinetBlock(cabLink) +
-        h2('Ваши ответы') + answersHtml(A);
+        h2('Ваши ответы') + answersHtml(A, ctx);
       return { subject: 'Ваши ответы в тесте для пар', html: emailWrap(html, 'Письмо от теста для пар. Ваши ответы попадут в итоговый разбор, который получите вы и ваш партнёр.') };
     },
     // Приглашение партнёру
@@ -771,7 +845,8 @@ var CQA = (function (DATA) {
   };
 
   return {
-    data: DATA, mail: mail, axes: AXES, axisOrder: AXIS_ORDER, genderize: genderize, withGender: withGender, axisLevel: axisLevel, esc: esc, plain: plain, fill: fill,
+    data: DATA, mail: mail, axes: AXES, axisOrder: AXIS_ORDER, genderize: genderize, withGender: withGender,
+    adapt: adapt, cleanContext: cleanContext, parseContext: parseContext, contextText: contextText, cond: COND, axisLevel: axisLevel, esc: esc, plain: plain, fill: fill,
     arr: arr, inter: inter, sameSet: sameSet, mean: mean, joinAnd: joinAnd, relation: relation, axisRow: axisRow, dynCard: dynCard, font: FONT,
     axisScore: axisScore, compare: compare, dynamics: dynamics,
     report: report, portraitHtml: portraitHtml, answersHtml: answersHtml,

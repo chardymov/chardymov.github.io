@@ -237,3 +237,9 @@ a { color: var(--accent); }
 }
 .topic-card.overall { background: var(--accent-soft); border-color: transparent; margin: 0 0 16px; }
 .topic-card .btns { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+
+/* ── «О вашей паре» */
+.ctx .seg legend small { font-weight: 400; color: var(--muted); }
+.ctx .seg-row span { min-height: 40px; font-size: 14px; }
+.ctx-line { font-size: 14px; color: var(--muted); margin: -8px 0 18px; }
+.ctx-line .link { padding: 0; color: var(--accent); }

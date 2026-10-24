@@ -22,7 +22,8 @@
     ctx: 'new',         // портрет: new — с главной, invite — по старой ссылке-приглашению, cabinet — из кабинета
     pairId: null, token: null,
     invite: null,       // { nameA, nameB, emailB }
-    cab: null,          // ответ cabinet: { me, nameMe, namePartner, portrait, topics }
+    cab: null,          // ответ cabinet: { me, nameMe, namePartner, portrait, topics, context }
+    pc: null,           // контекст пары (установочные вопросы): { rel, live, dur, kids }
     answers: {}, idx: 0, skipSex: false
   };
   function progressKey() { return 'cq_progress_' + (S.ctx === 'cabinet' ? S.token : S.pairId || 'new'); }
@@ -143,6 +144,73 @@
   }
   function store1(q, keys) { return CQT.cleanKeys(q, keys); }
 
+  // ───────────────────────── установочные вопросы о паре
+  // o: { initial, onDone(ctx), onBack }
+  function contextScreen(o) {
+    var init = o.initial || {};
+    render(
+      (o.onBack ? '<p class="crumbs"><button class="link" id="ctx-back">← Назад</button></p>' : '') +
+      '<form class="panel ctx" id="ctx" novalidate>' +
+        '<p class="eyebrow">Перед началом</p><h2>О вашей паре</h2>' +
+        '<p class="sub">Четыре коротких вопроса. По ним мы подстроим вопросы под вашу ситуацию — например, не будем спрашивать о совместном быте, если вы живёте отдельно. Ответ один на пару; его можно поменять в кабинете.</p>' +
+        D.context.map(function (q) {
+          var cur = CQA.arr(init[q.id]);
+          return '<fieldset class="field seg"><legend>' + esc(q.title) + (q.hint ? ' <small>· ' + esc(q.hint) + '</small>' : '') + '</legend><div class="seg-row">' +
+            Object.keys(q.options).map(function (k) {
+              return '<label><input type="' + (q.multi ? 'checkbox' : 'radio') + '" name="' + q.id + '" value="' + k + '"' + (cur.indexOf(k) >= 0 ? ' checked' : '') + '><span>' + esc(q.options[k]) + '</span></label>';
+            }).join('') + '</div></fieldset>';
+        }).join('') +
+        '<p class="error" id="err" hidden></p>' +
+        '<button class="btn block" type="submit">Дальше</button>' +
+      '</form>'
+    );
+    // «нет детей» исключает остальные варианты
+    app.querySelectorAll('input[name=kids]').forEach(function (b) {
+      b.addEventListener('change', function () {
+        if (!b.checked) return;
+        app.querySelectorAll('input[name=kids]').forEach(function (x) { if (x !== b && (b.value === 'none' || x.value === 'none')) x.checked = false; });
+      });
+    });
+    on('#ctx-back', 'click', function () { o.onBack(); });
+    on('#ctx', 'submit', function (e) {
+      e.preventDefault();
+      var f = e.target, c = {};
+      D.context.forEach(function (q) {
+        var vals = [].slice.call(f.querySelectorAll('input[name="' + q.id + '"]:checked')).map(function (x) { return x.value; });
+        c[q.id] = q.multi ? vals : vals[0];
+      });
+      var clean = CQA.cleanContext(c);
+      if (!clean) { var err = $('#err'); err.textContent = 'Ответьте, пожалуйста, на все четыре вопроса.'; err.hidden = false; return; }
+      track('context_set', clean);
+      o.onDone(clean);
+    });
+  }
+  // Сохраняет контекст пары на сервере (из кабинета) и продолжает.
+  function saveContext(c, next) {
+    spinner('Сохраняем…');
+    api('context', { id: S.pairId, t: S.token, context: c })
+      .then(function () { S.cab.context = c; S.pc = c; next(); })
+      .catch(function (e) { errorScreen(e.message, cabHref()); });
+  }
+  // Контекст есть — сразу дальше; нет — спрашиваем (в кабинете — и сохраняем).
+  function withContext(next, back) {
+    if (S.pc) return next(S.pc);
+    if (S.ctx === 'new') { var saved = store.get('cq_pc_new'); if (saved && CQA.cleanContext(saved)) { S.pc = saved; return next(S.pc); } }
+    contextScreen({
+      onBack: back,
+      onDone: function (c) {
+        if (S.ctx === 'cabinet') return saveContext(c, function () { next(c); });
+        S.pc = c;
+        if (S.ctx === 'new') store.set('cq_pc_new', c);
+        next(c);
+      }
+    });
+  }
+  function contextLine(c) {
+    if (!c) return '';
+    return D.context.map(function (q) { return CQA.arr(c[q.id]).map(function (k) { return q.options[k]; }).join(', '); }).join(' · ');
+  }
+
   // ───────────────────────── главная
   function landing() {
     track('view_landing');
@@ -227,6 +295,7 @@
     spinner('Загружаем приглашение…');
     api('invite', { id: S.pairId, t: S.token }).then(function (r) {
       S.invite = r;
+      S.pc = CQA.parseContext(r.context);
       track('invite_open');
       if (r.completed) {
         render('<div class="panel center"><div class="okmark">✓</div><h2>Вы уже ответили</h2><p>Разбор отправлен вам обоим на почту.</p>' +
@@ -280,6 +349,7 @@
   }
 
   function startQuiz(fresh) {
+    if (!S.pc) return withContext(function () { startQuiz(fresh); }, S.ctx === 'cabinet' ? cabinetView : S.ctx === 'new' ? landing : null);
     if (fresh) {
       store.del(progressKey());
       S.answers = {}; S.idx = 0; S.skipSex = false; S.sexIntroSeen = false; S.fixing = false;
@@ -299,11 +369,11 @@
     var first = QS.findIndex(function (x) { return x.block === q.block; });
     if (bl.optional && S.idx === first && !S.sexIntroSeen) return sexIntro();
 
-    var qi = S.idx, notice = S.notice;
+    var qi = S.idx, notice = S.notice, qa = CQA.adapt(q, S.pc) || q;
     S.notice = null;
     questionScreen({
       head: '<div class="quiz-head"><span><b>Блок ' + bl.n + '</b> · ' + esc(bl.title) + '</span><span>' + (qi + 1) + ' / ' + QS.length + '</span></div>',
-      pct: Math.round(100 * qi / QS.length), text: q.text, q: q, sel: S.answers[q.id], notice: notice,
+      pct: Math.round(100 * qi / QS.length), text: qa.text, q: qa, sel: S.answers[q.id], notice: notice,
       onBack: qi > 0 ? goBack : null,
       onDone: function (keys) {
         S.answers[q.id] = store1(q, keys);
@@ -435,12 +505,13 @@
 
   function submitA(nameA, emailA, nameB, emailB) {
     spinner('Отправляем ответы и приглашение…');
-    api('create', { rid: rid(), nameA: nameA, emailA: emailA, nameB: nameB, emailB: emailB, genderA: S.genderSelf, genderB: S.genderPartner, answers: S.answers, meta: { utm: utm, sid: sid } })
+    api('create', { rid: rid(), nameA: nameA, emailA: emailA, nameB: nameB, emailB: emailB, genderA: S.genderSelf, genderB: S.genderPartner, context: S.pc, answers: S.answers, meta: { utm: utm, sid: sid } })
       .then(function (r) {
         track('submit_a');
         store.del(progressKey());
         if (r.t) store.set('cq_cab', { id: r.id, t: r.t, me: nameA, partner: nameB });
         var me = { name: nameA, gender: S.genderSelf, answers: S.answers };
+        store.del('cq_pc_new');
         render(
           '<div class="center"><div class="okmark">✓</div><h2>Готово!</h2>' +
           '<p>Ваши ответы отправлены на <b>' + esc(emailA) + '</b>, а <b>' + esc(nameB) + '</b> получит приглашение на ' + esc(emailB) + '.<br>Как только партнёр ответит, разбор придёт вам обоим.</p>' +
@@ -467,7 +538,7 @@
 
   function submitB(nameB, emailB) {
     spinner('Сравниваем ваши ответы и готовим разбор…');
-    api('complete', { id: S.pairId, t: S.token, nameB: nameB, emailB: emailB, genderB: S.genderSelf, answers: S.answers })
+    api('complete', { id: S.pairId, t: S.token, nameB: nameB, emailB: emailB, genderB: S.genderSelf, context: S.pc, answers: S.answers })
       .then(function (r) {
         track('submit_b');
         store.del(progressKey());
@@ -523,7 +594,7 @@
   function cabinet() {
     spinner('Открываем кабинет пары…');
     api('cabinet', { id: S.pairId, t: S.token }).then(function (r) {
-      S.cab = r; S.role = r.me; S.ctx = 'cabinet';
+      S.cab = r; S.role = r.me; S.ctx = 'cabinet'; S.pc = CQA.parseContext(r.context);
       store.set('cq_cab', { id: S.pairId, t: S.token, me: r.nameMe, partner: r.namePartner });
       var tp = params.get('topic'), go = params.get('go');
       if (tp && CQT.topic(tp)) return openTopic(tp);
@@ -547,6 +618,7 @@
         '<p class="lead">Выберите, о чём хотите поговорить сегодня. Каждый новый разбор учитывает ваш портрет и все темы, которые вы уже прошли вдвоём' +
           (doneTopics || pt.done ? ' — сейчас это ' + [pt.done ? 'портрет' : '', doneTopics ? doneTopics + ' ' + plural(doneTopics, 'тема', 'темы', 'тем') : ''].filter(Boolean).join(' и ') : '') + '.</p>' +
       '</section>' +
+      contextCard(c) +
       overallCard(c) +
       '<div class="topic-card wide' + (pt.partner && !pt.me ? ' hot' : pt.me && !pt.done ? ' waiting' : '') + '"><div class="topic-top"><h3>Портрет пары</h3>' + pState + '</div>' +
         '<p>' + QS.length + ' вопроса об общении, конфликтах, быте, деньгах, близости и будущем — основа для всех разговоров.</p>' +
@@ -557,8 +629,19 @@
     );
     on('#portrait', 'click', function () { portraitIntro(); });
     on('#ov-open', 'click', overallView);
+    on('#ctx-edit', 'click', function () {
+      contextScreen({ initial: S.pc, onBack: cabinetView, onDone: function (cx) { saveContext(cx, cabinetView); } });
+    });
     on('#ov-ask', 'click', overallAsk);
     bindTopicGrid(openTopic);
+  }
+
+  // Сводка «О вашей паре» в кабинете (или просьба ответить, если её ещё нет).
+  function contextCard() {
+    if (!S.pc) return '<div class="topic-card wide waiting"><div class="topic-top"><h3>Расскажите о вашей паре</h3><span class="chip wait">4 вопроса</span></div>' +
+      '<p>Где вы живёте, сколько вместе, есть ли дети — чтобы вопросы в темах подходили именно вам.</p>' +
+      '<div class="topic-foot"><small>≈ 30 секунд</small><button class="btn small" id="ctx-edit">Ответить</button></div></div>';
+    return '<p class="ctx-line"><span>' + esc(contextLine(S.pc)) + '</span> <button class="link" id="ctx-edit">Изменить</button></p>';
   }
 
   // ───────────────────────── общий разбор (только когда на сервере подключён Claude)
@@ -628,13 +711,18 @@
   // ───────────────────────── тема: вопросы, догадки, фраза партнёру
   var T = null;
   function topicKey(id) { return 'cq_topic_' + (S.ctx === 'cabinet' ? S.token : 'new') + '_' + id; }
-  function saveTopic() { store.set(topicKey(T.topic.id), { a: T.a, g: T.g, note: T.note, idx: T.idx, nameSelf: T.nameSelf, namePartner: T.namePartner, genderSelf: T.genderSelf, genderPartner: T.genderPartner }); }
-  function steps(topic) {
-    var out = [];
-    topic.questions.forEach(function (q, i) {
+  function saveTopic() { store.set(topicKey(T.topic.id), { a: T.a, g: T.g, note: T.note, idx: T.idx, nameSelf: T.nameSelf, namePartner: T.namePartner, genderSelf: T.genderSelf, genderPartner: T.genderPartner, pc: T.pc }); }
+  // Шаги темы с учётом пары: вопросы подстроены, неподходящие пропущены.
+  function steps(topic, pc) {
+    var out = [], i = 0;
+    topic.questions.forEach(function (q0) {
+      var q = CQA.adapt(q0, pc);
+      if (!q) return;
       out.push({ q: q, i: i, guess: false });
       if (q.guess) out.push({ q: q, i: i, guess: true });
+      i++;
     });
+    out.total = i;
     return out;
   }
 
@@ -674,10 +762,14 @@
       if (fresh) store.del(topicKey(id));
       var sv = fresh ? null : store.get(topicKey(id));
       var f = $('#names');
-      T = { topic: topic, steps: steps(topic), a: sv && sv.a || {}, g: sv && sv.g || {}, note: sv && sv.note || '', idx: sv && sv.idx || 0, nameSelf: nameSelf, namePartner: namePartner,
-        genderSelf: f ? radio(f, 'genderSelf') : '', genderPartner: f ? radio(f, 'genderPartner') : '' };
-      track('topic_start', { topic: id, restart: !!fresh });
-      topicStep();
+      var gs = f ? radio(f, 'genderSelf') : '', gp = f ? radio(f, 'genderPartner') : '';
+      if (sv && sv.pc && !S.pc) S.pc = sv.pc;
+      withContext(function (pc) {
+        T = { topic: topic, pc: pc, steps: steps(topic, pc), a: sv && sv.a || {}, g: sv && sv.g || {}, note: sv && sv.note || '', idx: sv && sv.idx || 0, nameSelf: nameSelf, namePartner: namePartner,
+          genderSelf: gs, genderPartner: gp };
+        track('topic_start', { topic: id, restart: !!fresh });
+        topicStep();
+      }, function () { topicIntro(id); });
     }
     if (isNew) on('#names', 'submit', function (e) { e.preventDefault(); begin(false); });
     on('#go', 'click', function (e) { e.preventDefault(); begin(false); });
@@ -694,7 +786,7 @@
     // Догадку пропущенного вопроса не задаём
     while (T.idx < st.length && st[T.idx].guess && !T.a[st[T.idx].q.id]) T.idx++;
     if (T.idx >= st.length) return topicNote();
-    var s = st[T.idx], q = s.q, total = T.topic.questions.length;
+    var s = st[T.idx], q = s.q, total = st.total;
     var layer = CQ_TOPICS.layers[q.layer] || '';
     questionScreen({
       head: '<div class="quiz-head"><span><b>' + esc(T.topic.title) + '</b> · ' + esc(layer) + '</span><span>' + (s.i + 1) + ' / ' + total + '</span></div>',
@@ -720,7 +812,7 @@
 
   function topicNote() {
     var isNew = S.ctx !== 'cabinet', topic = T.topic;
-    var answered = Object.keys(T.a).length, need = Math.ceil(topic.questions.length / 2);
+    var answered = Object.keys(T.a).length, total = T.steps.total, need = Math.ceil(total / 2);
     var contact = store.get('cq_contact') || {};
     var partnerDone = !isNew && S.cab.topics[topic.id] && S.cab.topics[topic.id].partner;
     track('topic_note_view', { topic: topic.id });
@@ -737,7 +829,7 @@
           : S.cab.genderMe ? '' : genderField('genderSelf', 'Как к вам обращаться в разборе', '')) +
         '<label class="hp" aria-hidden="true">Сайт<input name="website" tabindex="-1" autocomplete="off"></label>' +
         CONSENT +
-        '<p class="error" id="err"' + (answered < need ? '' : ' hidden') + '>' + (answered < need ? 'Ответьте хотя бы на ' + need + ' вопросов из ' + topic.questions.length + ' — сейчас ' + answered + '.' : '') + '</p>' +
+        '<p class="error" id="err"' + (answered < need ? '' : ' hidden') + '>' + (answered < need ? 'Ответьте хотя бы на ' + need + ' вопросов из ' + total + ' — сейчас ' + answered + '.' : '') + '</p>' +
         '<button class="btn block" type="submit">' + (partnerDone ? 'Получить разбор' : 'Отправить') + '</button>' +
         '<div class="quiz-nav" style="margin-top:8px"><button class="link" type="button" id="back">← Вернуться к вопросам</button><span></span></div>' +
       '</form>'
@@ -754,7 +846,7 @@
       var f = e.target, v = function (n) { return (f.elements[n] && f.elements[n].value || '').trim(); };
       var err = $('#err');
       function fail(m) { err.textContent = m; err.hidden = false; }
-      if (Object.keys(T.a).length < need) return fail('Ответьте хотя бы на ' + need + ' вопросов из ' + topic.questions.length + '.');
+      if (Object.keys(T.a).length < need) return fail('Ответьте хотя бы на ' + need + ' вопросов из ' + total + '.');
       if (isNew) {
         if (!emailRe.test(v('emailSelf'))) return fail('Проверьте ваш email.');
         if (!emailRe.test(v('emailPartner'))) return fail('Проверьте email партнёра.');
@@ -776,10 +868,11 @@
   function submitStart(emailA, emailB) {
     var topic = T.topic;
     spinner('Отправляем ответы и приглашение…');
-    api('start', Object.assign({ rid: rid(), topic: topic.id, nameA: T.nameSelf, emailA: emailA, nameB: T.namePartner, emailB: emailB, genderA: T.genderSelf, genderB: T.genderPartner, meta: { utm: utm, sid: sid } }, topicPayload()))
+    api('start', Object.assign({ rid: rid(), topic: topic.id, nameA: T.nameSelf, emailA: emailA, nameB: T.namePartner, emailB: emailB, genderA: T.genderSelf, genderB: T.genderPartner, context: T.pc, meta: { utm: utm, sid: sid } }, topicPayload()))
       .then(function (r) {
         track('topic_submit', { topic: topic.id, ctx: 'new' });
         store.del(topicKey(topic.id));
+        store.del('cq_pc_new');
         S.pairId = r.id; S.token = r.t;
         store.set('cq_cab', { id: r.id, t: r.t, me: T.nameSelf, partner: T.namePartner });
         render('<div class="panel center"><div class="okmark">✓</div><h2>Готово!</h2>' +
@@ -838,19 +931,19 @@
     },
     newPair: function (d) {
       if (d.emailA.toLowerCase() === d.emailB.toLowerCase()) throw new Error('Email партнёра должен отличаться от вашего.');
-      return { id: Demo.rnd(), tA: Demo.rnd(), tB: Demo.rnd(), A: { name: d.nameA, email: d.emailA, gender: d.genderA || '' }, B: { name: d.nameB, email: d.emailB, gender: d.genderB || '' }, talks: {} };
+      return { id: Demo.rnd(), tA: Demo.rnd(), tB: Demo.rnd(), context: CQA.cleanContext(d.context), A: { name: d.nameA, email: d.emailA, gender: d.genderA || '' }, B: { name: d.nameB, email: d.emailB, gender: d.genderB || '' }, talks: {} };
     },
     create: function (d) {
       var p = Demo.newPair(d);
       p.A.answers = Demo.cleanPortrait(d.answers);
       Demo.save(p);
-      Demo.send(d.emailA, CQA.mail.initiator(p.A, p.B, Demo.cab(p, 'A')));
+      Demo.send(d.emailA, CQA.mail.initiator(p.A, p.B, Demo.cab(p, 'A'), p.context));
       Demo.send(d.emailB, CQA.mail.invite(p.A, p.B, Demo.base() + '?p=' + p.id + '&t=' + p.tB));
       return { ok: true, id: p.id, t: p.tA };
     },
     start: function (d) {
       var topic = CQT.topic(d.topic), p = Demo.newPair(d);
-      p.talks[topic.id] = { A: CQT.cleanTopic(topic, d) };
+      p.talks[topic.id] = { A: CQT.cleanTopic(topic, d, p.context) };
       Demo.save(p);
       Demo.send(d.emailA, CQT.mail.topicStarted(p.A, p.B, topic, Demo.cab(p, 'A')));
       Demo.send(d.emailB, CQT.mail.topicInvite(p.A, p.B, topic, Demo.cab(p, 'B') + '&topic=' + topic.id));
@@ -859,10 +952,10 @@
     invite: function (d) {
       var p = Demo.find(d);
       if (d.t !== p.tB || !p.A.answers) throw new Error('not_found');
-      return { ok: true, nameA: p.A.name, nameB: p.B.name, emailB: p.B.email, genderB: p.B.gender || '', completed: !!p.completed };
+      return { ok: true, nameA: p.A.name, nameB: p.B.name, emailB: p.B.email, genderB: p.B.gender || '', context: p.context || null, completed: !!p.completed };
     },
     portraitDone: function (p) {
-      var r = CQA.report(p.A, p.B);
+      var r = CQA.report(p.A, p.B, { ctx: p.context });
       p.completed = true; Demo.save(p);
       Demo.send(p.A.email, CQA.mail.result(p.A, p.B, r.html, Demo.base() + '?r=' + p.id + '&t=' + p.tA, p.A.name, Demo.cab(p, 'A')));
       Demo.send(p.B.email, CQA.mail.result(p.A, p.B, r.html, Demo.base() + '?r=' + p.id + '&t=' + p.tB, p.B.name, Demo.cab(p, 'B')));
@@ -872,17 +965,24 @@
       var p = Demo.find(d);
       if (p.completed) throw new Error('already_completed');
       p.B = { name: d.nameB, email: d.emailB, gender: d.genderB || p.B.gender || '', answers: Demo.cleanPortrait(d.answers) };
+      if (!p.context) p.context = CQA.cleanContext(d.context);
       return { ok: true, html: Demo.portraitDone(p) };
     },
     report: function (d) {
       var p = Demo.find(d);
       if (!p.completed) throw new Error('not_ready');
-      return { ok: true, html: CQA.report(p.A, p.B).html };
+      return { ok: true, html: CQA.report(p.A, p.B, { ctx: p.context }).html };
+    },
+    context: function (d) {
+      var p = Demo.find(d), c = CQA.cleanContext(d.context);
+      if (!c) throw new Error('Ответьте на все вопросы о паре.');
+      p.context = c; Demo.save(p);
+      return { ok: true };
     },
     cabinet: function (d) {
       var p = Demo.find(d), me = Demo.role(p, d.t), other = me === 'A' ? 'B' : 'A', topics = {};
       Object.keys(p.talks).forEach(function (k) { var s = p.talks[k]; topics[k] = { me: !!s[me], partner: !!s[other], done: !!s.completed }; });
-      return { ok: true, me: me, nameMe: p[me].name, namePartner: p[other].name, emailMe: p[me].email, genderMe: p[me].gender || '', genderPartner: p[other].gender || '', ai: false,
+      return { ok: true, me: me, nameMe: p[me].name, namePartner: p[other].name, emailMe: p[me].email, genderMe: p[me].gender || '', genderPartner: p[other].gender || '', context: p.context || null, ai: false,
         portrait: { me: !!p[me].answers, partner: !!p[other].answers, done: !!p.completed }, topics: topics };
     },
     talkReport: function (p, id) {
@@ -897,7 +997,7 @@
       merge(allA, s.A.a); merge(allB, s.B.a);
       var X = { name: p.A.name, email: p.A.email, gender: p.A.gender, a: s.A.a, g: s.A.g, note: s.A.note, all: allA };
       var Y = { name: p.B.name, email: p.B.email, gender: p.B.gender, a: s.B.a, g: s.B.g, note: s.B.note, all: allB };
-      var r = CQT.report(id, X, Y, { mods: mods });
+      var r = CQT.report(id, X, Y, { mods: mods, ctx: p.context });
       r.X = X; r.Y = Y;
       return r;
     },
@@ -905,7 +1005,7 @@
       var p = Demo.find(d), me = Demo.role(p, d.t), other = me === 'A' ? 'B' : 'A';
       if (d.gender) p[me].gender = d.gender;
       if (d.kind === 'portrait') {
-        if (p[me].answers) return p.completed ? { ok: true, done: true, html: CQA.report(p.A, p.B).html } : { ok: true, done: false };
+        if (p[me].answers) return p.completed ? { ok: true, done: true, html: CQA.report(p.A, p.B, { ctx: p.context }).html } : { ok: true, done: false };
         p[me].answers = Demo.cleanPortrait(d.answers);
         if (!p[other].answers) {
           Demo.save(p);
@@ -918,7 +1018,7 @@
       if (!topic) throw new Error('bad_topic');
       var s = p.talks[topic.id] || (p.talks[topic.id] = {});
       if (s[me]) return s.completed ? { ok: true, done: true, html: Demo.talkReport(p, topic.id).html } : { ok: true, done: false };
-      s[me] = CQT.cleanTopic(topic, d);
+      s[me] = CQT.cleanTopic(topic, d, p.context);
       if (!s[other]) {
         Demo.save(p);
         Demo.send(p[other].email, CQT.mail.topicInvite(p[me], p[other], topic, Demo.cab(p, other) + '&topic=' + topic.id));

@@ -26,14 +26,14 @@
  * Установка — см. README.md в корне репозитория.
  */
 
-var PAIR_COLS = ['id', 'created', 'tokenA', 'nameA', 'emailA', 'answersA', 'tokenB', 'nameB', 'emailB', 'answersB', 'completed', 'score', 'claude', 'meta', 'genderA', 'genderB'];
+var PAIR_COLS = ['id', 'created', 'tokenA', 'nameA', 'emailA', 'answersA', 'tokenB', 'nameB', 'emailB', 'answersB', 'completed', 'score', 'claude', 'meta', 'genderA', 'genderB', 'context'];
 var TALK_COLS = ['id', 'pair', 'topic', 'created', 'answersA', 'answersB', 'completed', 'claude'];
 var JOB_COLS = ['id', 'created', 'kind', 'pair', 'talk', 'status', 'attempts', 'updated', 'error'];
 var OVERALL_COLS = ['pair', 'created', 'modules', 'text'];
 var OVERALL_MIN = 3; // столько модулей нужно пройти вдвоём, чтобы запросить общий разбор
 var EVENT_COLS = ['time', 'name', 'sid', 'role', 'pair', 'utm', 'extra'];
 var SHARED_FILES = ['questions.js', 'topics.js', 'analysis.js', 'talks.js'];
-var SHARED_VERSION = '9'; // меняется вместе с ?v= на сайте — сбрасывает кеш файлов
+var SHARED_VERSION = '10'; // меняется вместе с ?v= на сайте — сбрасывает кеш файлов
 var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 // ───────────────────────── вход
@@ -66,6 +66,7 @@ var ROUTES = {
   cabinet: cabinet_,
   answer: answer_,
   talk: talk_,
+  context: context_,
   overall_request: overallRequest_,
   overall_view: overallView_,
   event: event_
@@ -110,11 +111,11 @@ function createPair_(d) {
   // Буквенный префикс — чтобы Google Таблицы не превратили токен в число.
   var id = 'p' + token_(9), tokenA = 't' + token_(15), tokenB = 't' + token_(15);
   var meta = { utm: d.meta && d.meta.utm || {}, sid: d.meta && d.meta.sid || '' };
-  var gA = cleanGender_(d.genderA), gB = cleanGender_(d.genderB);
-  sheet_('pairs', PAIR_COLS).appendRow([id, new Date(), tokenA, nameA, emailA, JSON.stringify(answers), tokenB, nameB, emailB, '', '', '', '', JSON.stringify(meta), gA, gB]);
+  var gA = cleanGender_(d.genderA), gB = cleanGender_(d.genderB), ctx = CQA.cleanContext(d.context);
+  sheet_('pairs', PAIR_COLS).appendRow([id, new Date(), tokenA, nameA, emailA, JSON.stringify(answers), tokenB, nameB, emailB, '', '', '', '', JSON.stringify(meta), gA, gB, ctx ? JSON.stringify(ctx) : '']);
 
   var A = { name: nameA, email: emailA, gender: gA, answers: answers }, B = { name: nameB, email: emailB, gender: gB };
-  send_(emailA, CQA.mail.initiator(A, B, cabLink_(id, tokenA)));
+  send_(emailA, CQA.mail.initiator(A, B, cabLink_(id, tokenA), ctx));
   send_(emailB, CQA.mail.invite(A, B, siteUrl_() + '?p=' + id + '&t=' + tokenB));
   return { ok: true, id: id, t: tokenA };
 }
@@ -130,7 +131,8 @@ function start_(d) {
     if (!nameA || !nameB) throw new Error('Укажите имена.');
     if (!emailA || !emailB) throw new Error('Проверьте адреса email.');
     if (emailA === emailB) throw new Error('Email партнёра должен отличаться от вашего.');
-    var mine = CQT.cleanTopic(topic, d);
+    var ctx = CQA.cleanContext(d.context);
+    var mine = CQT.cleanTopic(topic, d, ctx);
     rateLimit_('a:' + emailA, 3);
     rateLimit_('b:' + emailB, 3);
     ensureQuota_(2);
@@ -138,7 +140,7 @@ function start_(d) {
     var id = 'p' + token_(9), tokenA = 't' + token_(15), tokenB = 't' + token_(15);
     var meta = { utm: d.meta && d.meta.utm || {}, sid: d.meta && d.meta.sid || '', start: topic.id };
     var gA = cleanGender_(d.genderA), gB = cleanGender_(d.genderB);
-    sheet_('pairs', PAIR_COLS).appendRow([id, new Date(), tokenA, nameA, emailA, '', tokenB, nameB, emailB, '', '', '', '', JSON.stringify(meta), gA, gB]);
+    sheet_('pairs', PAIR_COLS).appendRow([id, new Date(), tokenA, nameA, emailA, '', tokenB, nameB, emailB, '', '', '', '', JSON.stringify(meta), gA, gB, ctx ? JSON.stringify(ctx) : '']);
     sheet_('talks', TALK_COLS).appendRow(['s' + token_(9), id, topic.id, new Date(), JSON.stringify(mine), '', '', '']);
 
     var A = { name: nameA, email: emailA, gender: gA }, B = { name: nameB, email: emailB, gender: gB };
@@ -161,11 +163,23 @@ function cabinet_(d) {
   return {
     ok: true, me: me, nameMe: row.data['name' + me], namePartner: row.data['name' + other], emailMe: row.data['email' + me],
     genderMe: row.data['gender' + me] || '', genderPartner: row.data['gender' + other] || '',
+    context: json_(row.data.context),
     portrait: { me: !!row.data['answers' + me], partner: !!row.data['answers' + other], done: !!row.data.completed },
     topics: topics,
     ai: aiOn_(), modules: modules, overallMin: OVERALL_MIN,
     overall: { at: last ? fmtDate_(last.created) : '', modules: last ? Number(last.modules) : 0, pending: hasJob_(row.data.id, 'overall') }
   };
+}
+
+// Установочные вопросы о паре (из кабинета): сохраняем или меняем.
+function context_(d) {
+  loadShared_();
+  var row = findPair_(d.id), me = roleOf_(row, d.t);
+  if (!me) return { ok: false, error: 'not_found' };
+  var ctx = CQA.cleanContext(d.context);
+  if (!ctx) return { ok: false, error: 'Ответьте, пожалуйста, на все вопросы о паре.' };
+  row.set({ context: JSON.stringify(ctx) });
+  return { ok: true, context: ctx };
 }
 
 // Ответы одного из партнёров на модуль (портрет или тему) из кабинета.
@@ -199,7 +213,7 @@ function answer_(d) {
     if (!topic) return { ok: false, error: 'bad_topic' };
     var talks = findTalks_(P.id), s = latestTalks_(talks).filter(function (x) { return x.data.topic === topic.id; })[0];
     if (s && s.data['answers' + me]) return s.data.completed ? { ok: true, done: true, html: talkHtml_(row, talks, s, me) } : { ok: true, done: false };
-    var mine = CQT.cleanTopic(topic, d);
+    var mine = CQT.cleanTopic(topic, d, ctx_(P));
     ensureQuota_(2);
     if (!s) {
       var tid = 's' + token_(9), vals = [tid, P.id, topic.id, new Date(), '', '', '', ''];
@@ -225,7 +239,7 @@ function answer_(d) {
 // Модуль завершён. Без ключа Claude письма уходят сразу; с ключом — фоновая задача
 // допишет раздел от Claude и разошлёт письма, а сайт пока показывает разбор по правилам.
 function finishPortrait_(row) {
-  var P = row.data, rep = CQA.report(personWith_(P, 'A'), personWith_(P, 'B'));
+  var P = row.data, rep = CQA.report(personWith_(P, 'A'), personWith_(P, 'B'), { ctx: ctx_(P) });
   row.set({ completed: new Date(), score: rep.score, claude: '' });
   if (aiOn_()) { enqueue_('portrait', P.id, ''); return { ok: true, done: true, html: rep.html, aiPending: true }; }
   sendPortraitMails_(row, rep.html);
@@ -357,7 +371,7 @@ function runJob_(j) {
   var row = findPair_(j.pair);
   if (!row) return;
   if (j.kind === 'portrait') {
-    var rep = CQA.report(personWith_(row.data, 'A'), personWith_(row.data, 'B'));
+    var rep = CQA.report(personWith_(row.data, 'A'), personWith_(row.data, 'B'), { ctx: ctx_(row.data) });
     var narrative = claudeCall_(rep.text, PORTRAIT_PROMPT);
     row.set({ claude: narrative });
     sendPortraitMails_(row, withNarrative_(rep.html, narrative, 'Общий взгляд на вашу пару'));
@@ -368,7 +382,7 @@ function runJob_(j) {
     s.set({ claude: narr });
     sendTalkMails_(row, s, r, withNarrative_(r.html, narr, 'Взгляд психолога на этот разговор'));
   } else if (j.kind === 'overall') {
-    var ppl = overallPeople_(row), inp = CQT.overallInput(ppl[0], ppl[1]);
+    var ppl = overallPeople_(row), inp = CQT.overallInput(ppl[0], ppl[1], ctx_(row.data));
     var text = claudeCall_(inp.text, OVERALL_PROMPT);
     if (!text) throw new Error('Claude не вернул текст общего разбора');
     var at = new Date();
@@ -382,7 +396,7 @@ function runJob_(j) {
 function giveUp_(j) {
   var row = findPair_(j.pair);
   if (!row) return;
-  if (j.kind === 'portrait') sendPortraitMails_(row, CQA.report(personWith_(row.data, 'A'), personWith_(row.data, 'B')).html);
+  if (j.kind === 'portrait') sendPortraitMails_(row, CQA.report(personWith_(row.data, 'A'), personWith_(row.data, 'B'), { ctx: ctx_(row.data) }).html);
   if (j.kind === 'talk') {
     var talks = findTalks_(j.pair), s = talks.filter(function (x) { return x.data.id === j.talk; })[0];
     if (s) { var r = buildTalk_(row, talks, s); sendTalkMails_(row, s, r, r.html); }
@@ -418,7 +432,7 @@ function buildTalk_(row, talks, s) {
   merge(allA, a.a); merge(allB, b.a);
   var X = { name: P.nameA, email: P.emailA, gender: P.genderA || '', a: a.a, g: a.g || {}, note: a.note || '', all: allA };
   var Y = { name: P.nameB, email: P.emailB, gender: P.genderB || '', a: b.a, g: b.g || {}, note: b.note || '', all: allB };
-  var r = CQT.report(topic.id, X, Y, { mods: mods });
+  var r = CQT.report(topic.id, X, Y, { mods: mods, ctx: ctx_(P) });
   r.X = X; r.Y = Y;
   return r;
 }
@@ -426,8 +440,10 @@ function talkHtml_(row, talks, s) {
   return withNarrative_(buildTalk_(row, talks, s).html, s.data.claude, 'Взгляд психолога на этот разговор');
 }
 function portraitHtml_(row) {
-  return withNarrative_(CQA.report(personWith_(row.data, 'A'), personWith_(row.data, 'B')).html, row.data.claude, 'Общий взгляд на вашу пару');
+  return withNarrative_(CQA.report(personWith_(row.data, 'A'), personWith_(row.data, 'B'), { ctx: ctx_(row.data) }).html, row.data.claude, 'Общий взгляд на вашу пару');
 }
+function ctx_(P) { return CQA.parseContext(P.context); }
+function json_(v) { try { return v ? JSON.parse(v) : null; } catch (e) { return null; } }
 function person_(P, L) { return { name: P['name' + L], email: P['email' + L], gender: P['gender' + L] || '' }; }
 function personWith_(P, L) { var x = person_(P, L); x.answers = P['answers' + L] ? JSON.parse(P['answers' + L]) : {}; return x; }
 
@@ -436,7 +452,7 @@ function invite_(d) {
   var row = findPair_(d.id);
   // Пары, начатые с темы, приглашают партнёра в кабинет, а не по этой ссылке.
   if (!row || d.t !== row.data.tokenB || !row.data.answersA) return { ok: false, error: 'not_found' };
-  return { ok: true, nameA: row.data.nameA, nameB: row.data.nameB, emailB: row.data.emailB, completed: !!row.data.completed };
+  return { ok: true, nameA: row.data.nameA, nameB: row.data.nameB, emailB: row.data.emailB, genderB: row.data.genderB || '', context: json_(row.data.context), completed: !!row.data.completed };
 }
 
 // Партнёр ответил: строим разбор, отправляем обоим.
@@ -456,6 +472,8 @@ function complete_(d) {
     var set = { nameB: nameB, emailB: emailB, answersB: JSON.stringify(answersB) };
     var gB = cleanGender_(d.genderB);
     if (gB) set.genderB = gB;
+    var ctx = !row.data.context && CQA.cleanContext(d.context);
+    if (ctx) set.context = JSON.stringify(ctx);
     row.set(set);
     return finishPortrait_(row);
   } finally {
