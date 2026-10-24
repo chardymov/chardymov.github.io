@@ -190,11 +190,11 @@
       var st = status && status[t.id] || {}, chip = '', label = 'Выбрать';
       if (status) {
         if (st.done) { chip = '<span class="chip good">Разбор готов</span>'; label = 'Открыть разбор'; }
-        else if (st.me) { chip = '<span class="chip">Ждём ответа партнёра</span>'; label = 'Подробнее'; }
+        else if (st.me) { chip = '<span class="chip wait">Ждём ответа: ' + esc(S.cab ? S.cab.namePartner : 'партнёр') + '</span>'; label = 'Подробнее'; }
         else if (st.partner) { chip = '<span class="chip accent">Ваша очередь</span>'; label = 'Ответить'; }
         else label = 'Начать';
       }
-      return '<div class="topic-card' + (st.partner && !st.me ? ' hot' : '') + '"><div class="topic-top"><h3>' + esc(t.title) + '</h3>' + chip + '</div>' +
+      return '<div class="topic-card' + (st.partner && !st.me ? ' hot' : st.me && !st.done ? ' waiting' : '') + '"><div class="topic-top"><h3>' + esc(t.title) + '</h3>' + chip + '</div>' +
         '<p>' + esc(t.lead) + '</p><div class="topic-foot"><small>' + t.questions.length + ' вопросов · ≈ ' + t.minutes + ' мин' + (t.adult ? ' · 18+' : t.deep ? ' · глубокая' : '') + '</small>' +
         '<button class="btn small' + (st.done || st.me ? ' ghost' : '') + '" data-topic="' + t.id + '">' + label + '</button></div></div>';
     }).join('');
@@ -368,19 +368,23 @@
       progressBar(100) +
       '<form class="panel" id="f" novalidate>' +
         (isCab
-          ? '<h2>Отправить ответы?</h2><p class="sub">' + (S.cab.portrait.partner ? 'Разбор придёт вам и ' + esc(S.cab.namePartner) + ' сразу после отправки.' : esc(S.cab.namePartner) + ' получит приглашение ответить, а разбор придёт вам обоим.') + '</p>'
+          ? '<h2>Отправить ответы?</h2><p class="sub">' + (S.cab.portrait.partner ? 'Разбор придёт вам и ' + esc(S.cab.namePartner) + ' сразу после отправки.' : esc(S.cab.namePartner) + ' получит приглашение ответить, а разбор придёт вам обоим.') + '</p>' +
+            (S.cab.genderMe ? '' : genderField('genderSelf', 'Как к вам обращаться в разборе', ''))
           : isB
             ? '<h2>Куда отправить разбор?</h2><p class="sub">Разбор придёт вам и ' + esc(inv.nameA) + ' сразу после отправки.</p>' +
               '<div class="grid2">' +
                 field('nameSelf', 'Ваше имя', 'text', inv.nameB || '', 'given-name') +
                 field('emailSelf', 'Ваш email', 'email', inv.emailB || '', 'email') +
-              '</div>'
+              '</div>' + genderField('genderSelf', 'Как к вам обращаться в разборе', inv.genderB || saved.genderSelf || '')
             : '<h2>Кому отправить?</h2><p class="sub">Вам придут ваши ответы, а партнёру — ссылка, чтобы ответить со своей стороны.</p>' +
               '<div class="grid2">' +
                 field('nameSelf', 'Ваше имя', 'text', saved.nameSelf || '', 'given-name') +
                 field('emailSelf', 'Ваш email', 'email', saved.emailSelf || '', 'email') +
+                genderField('genderSelf', 'Как к вам обращаться', saved.genderSelf || '') +
+                '<span class="grid-gap"></span>' +
                 field('namePartner', 'Имя партнёра', 'text', '', 'off') +
                 field('emailPartner', 'Email партнёра', 'email', '', 'off') +
+                genderField('genderPartner', 'Как обращаться к партнёру', '') +
               '</div>') +
         '<label class="hp" aria-hidden="true">Сайт<input name="website" tabindex="-1" autocomplete="off"></label>' +
         CONSENT +
@@ -407,12 +411,21 @@
       if (!f.elements.consent.checked) return fail('Подтвердите согласие, чтобы продолжить.');
       if (v('website')) return; // бот
       if (firstMissing() >= 0) return details();
+      S.genderSelf = radio(f, 'genderSelf'); S.genderPartner = radio(f, 'genderPartner');
       if (isCab) return submitCabPortrait();
-      store.set('cq_contact', { nameSelf: v('nameSelf'), emailSelf: v('emailSelf') });
+      store.set('cq_contact', { nameSelf: v('nameSelf'), emailSelf: v('emailSelf'), genderSelf: S.genderSelf });
       if (isB) submitB(v('nameSelf'), v('emailSelf'));
       else submitA(v('nameSelf'), v('emailSelf'), v('namePartner'), v('emailPartner'));
     });
   }
+  // Как обращаться: он / она / без разницы. Значения m / f / n.
+  function genderField(name, label, val) {
+    var opts = [['m', 'он'], ['f', 'она'], ['n', 'без разницы']];
+    return '<fieldset class="field seg"><legend>' + label + '</legend><div class="seg-row">' + opts.map(function (o) {
+      return '<label><input type="radio" name="' + name + '" value="' + o[0] + '"' + (val === o[0] ? ' checked' : '') + '><span>' + o[1] + '</span></label>';
+    }).join('') + '</div></fieldset>';
+  }
+  function radio(f, name) { var el = f.querySelector('input[name="' + name + '"]:checked'); return el ? el.value : ''; }
   function field(name, label, type, val, ac) {
     return '<label class="field"><span>' + label + '</span><input name="' + name + '" type="' + type + '" value="' + esc(val) + '" autocomplete="' + ac + '"' + (type === 'email' ? ' inputmode="email"' : '') + ' maxlength="80" required></label>';
   }
@@ -422,12 +435,12 @@
 
   function submitA(nameA, emailA, nameB, emailB) {
     spinner('Отправляем ответы и приглашение…');
-    api('create', { rid: rid(), nameA: nameA, emailA: emailA, nameB: nameB, emailB: emailB, answers: S.answers, meta: { utm: utm, sid: sid } })
+    api('create', { rid: rid(), nameA: nameA, emailA: emailA, nameB: nameB, emailB: emailB, genderA: S.genderSelf, genderB: S.genderPartner, answers: S.answers, meta: { utm: utm, sid: sid } })
       .then(function (r) {
         track('submit_a');
         store.del(progressKey());
         if (r.t) store.set('cq_cab', { id: r.id, t: r.t, me: nameA, partner: nameB });
-        var me = { name: nameA, answers: S.answers };
+        var me = { name: nameA, gender: S.genderSelf, answers: S.answers };
         render(
           '<div class="center"><div class="okmark">✓</div><h2>Готово!</h2>' +
           '<p>Ваши ответы отправлены на <b>' + esc(emailA) + '</b>, а <b>' + esc(nameB) + '</b> получит приглашение на ' + esc(emailB) + '.<br>Как только партнёр ответит, разбор придёт вам обоим.</p>' +
@@ -443,17 +456,22 @@
         errorScreen(e.message === NO_REPLY ? lostReply(emailA) : e.message);
       });
   }
+  // Подпись над готовым разбором: с ИИ письмо приходит чуть позже.
+  function readyNote(r) {
+    return r.aiPending ? 'Разбор готов. Раздел от ИИ допишется за пару минут — тогда разбор целиком придёт вам обоим на почту.'
+      : 'Разбор готов и отправлен вам обоим на почту.';
+  }
   function mailNote() {
     return DEMO ? '<p class="sub">Демо-режим: письма не отправляются, их можно посмотреть в «Демо-почте» внизу справа.</p>' : '<p class="sub">Не видите письмо? Проверьте папку «Спам» и «Промоакции».</p>';
   }
 
   function submitB(nameB, emailB) {
     spinner('Сравниваем ваши ответы и готовим разбор…');
-    api('complete', { id: S.pairId, t: S.token, nameB: nameB, emailB: emailB, answers: S.answers })
+    api('complete', { id: S.pairId, t: S.token, nameB: nameB, emailB: emailB, genderB: S.genderSelf, answers: S.answers })
       .then(function (r) {
         track('submit_b');
         store.del(progressKey());
-        showReport(r.html, 'Разбор готов и отправлен вам обоим на почту.');
+        showReport(r.html, readyNote(r));
       })
       .catch(function (e) {
         if (e.message !== 'already_completed') return errorScreen(e.message);
@@ -467,17 +485,18 @@
 
   function submitCabPortrait() {
     spinner(S.cab.portrait.partner ? 'Сравниваем ваши ответы и готовим разбор…' : 'Отправляем ответы…');
-    api('answer', { rid: rid(), id: S.pairId, t: S.token, kind: 'portrait', answers: S.answers })
+    api('answer', { rid: rid(), id: S.pairId, t: S.token, kind: 'portrait', gender: S.genderSelf, answers: S.answers })
       .then(function (r) {
         track('submit_portrait', { done: r.done });
         store.del(progressKey());
-        if (r.done) return showReport(r.html, 'Разбор готов и отправлен вам обоим на почту.');
+        if (S.genderSelf) S.cab.genderMe = S.genderSelf;
+        if (r.done) return showReport(r.html, readyNote(r));
         render(
           '<div class="center"><div class="okmark">✓</div><h2>Готово!</h2>' +
           '<p>' + esc(S.cab.namePartner) + ' получит письмо с приглашением ответить. Как только это случится, разбор придёт вам обоим.</p>' + mailNote() +
           '<p><a class="btn ghost" href="' + cabHref() + '">В кабинет пары</a></p></div>' +
           '<h2 style="margin-top:32px">Ваш личный портрет</h2>' +
-          '<div class="paper">' + CQA.portraitHtml({ name: S.cab.nameMe, answers: S.answers }) + '</div>'
+          '<div class="paper">' + CQA.portraitHtml({ name: S.cab.nameMe, gender: S.cab.genderMe, answers: S.answers }) + '</div>'
         );
       })
       .catch(function (e) { errorScreen(e.message === NO_REPLY ? 'Сервер не успел ответить. Откройте кабинет пары через пару минут — если ответы приняты, это будет видно там.' : e.message, cabHref()); });
@@ -509,6 +528,7 @@
       var tp = params.get('topic'), go = params.get('go');
       if (tp && CQT.topic(tp)) return openTopic(tp);
       if (go === 'portrait' && !r.portrait.me) return portraitIntro();
+      if (go === 'overall' && r.overall && r.overall.at) return overallView();
       cabinetView();
     }).catch(function (e) { errorScreen(e.message === 'not_found' ? 'Кабинет не найден. Проверьте ссылку из письма.' : e.message); });
   }
@@ -516,7 +536,7 @@
   function cabinetView() {
     var c = S.cab, pt = c.portrait;
     track('view_cabinet');
-    var pState = pt.done ? '<span class="chip good">Разбор готов</span>' : pt.me ? '<span class="chip">Ждём ответа партнёра</span>' : pt.partner ? '<span class="chip accent">Ваша очередь</span>' : '';
+    var pState = pt.done ? '<span class="chip good">Разбор готов</span>' : pt.me ? '<span class="chip wait">Ждём ответа: ' + esc(c.namePartner) + '</span>' : pt.partner ? '<span class="chip accent">Ваша очередь</span>' : '';
     var pBtn = pt.done ? '<a class="btn small ghost" href="?r=' + encodeURIComponent(S.pairId) + '&t=' + encodeURIComponent(S.token) + '">Открыть разбор</a>'
       : pt.me ? '' : '<button class="btn small" id="portrait">' + (pt.partner ? 'Ответить' : 'Пройти') + '</button>';
     var doneTopics = CQT.topics.filter(function (t) { return c.topics[t.id] && c.topics[t.id].done; }).length;
@@ -527,7 +547,8 @@
         '<p class="lead">Выберите, о чём хотите поговорить сегодня. Каждый новый разбор учитывает ваш портрет и все темы, которые вы уже прошли вдвоём' +
           (doneTopics || pt.done ? ' — сейчас это ' + [pt.done ? 'портрет' : '', doneTopics ? doneTopics + ' ' + plural(doneTopics, 'тема', 'темы', 'тем') : ''].filter(Boolean).join(' и ') : '') + '.</p>' +
       '</section>' +
-      '<div class="topic-card wide' + (pt.partner && !pt.me ? ' hot' : '') + '"><div class="topic-top"><h3>Портрет пары</h3>' + pState + '</div>' +
+      overallCard(c) +
+      '<div class="topic-card wide' + (pt.partner && !pt.me ? ' hot' : pt.me && !pt.done ? ' waiting' : '') + '"><div class="topic-top"><h3>Портрет пары</h3>' + pState + '</div>' +
         '<p>' + QS.length + ' вопроса об общении, конфликтах, быте, деньгах, близости и будущем — основа для всех разговоров.</p>' +
         '<div class="topic-foot"><small>≈ 10 минут</small>' + pBtn + '</div></div>' +
       '<h2>Разговоры</h2>' +
@@ -535,7 +556,45 @@
       '<p class="note">Ответы партнёра вы увидите, только когда ответите оба. Эта страница открывается по личной ссылке из письма — не пересылайте её посторонним.</p>'
     );
     on('#portrait', 'click', function () { portraitIntro(); });
+    on('#ov-open', 'click', overallView);
+    on('#ov-ask', 'click', overallAsk);
     bindTopicGrid(openTopic);
+  }
+
+  // ───────────────────────── общий разбор (только когда на сервере подключён Claude)
+  function overallCard(c) {
+    if (!c.ai) return '';
+    var o = c.overall || {}, n = c.modules, min = c.overallMin || 3, fresh = n > (o.modules || 0);
+    var text, btns = '';
+    if (o.pending) text = 'Готовится — придёт вам обоим на почту через несколько минут.';
+    else if (n < min) text = 'Станет доступен, когда вы вдвоём пройдёте хотя бы ' + min + ' модуля. Сейчас пройдено: ' + n + '.';
+    else if (o.at) text = 'Последний разбор — от ' + esc(o.at) + ', по ' + o.modules + ' ' + plural(o.modules, 'модулю', 'модулям', 'модулям') + '.' + (fresh ? ' С тех пор вы прошли ещё — его можно обновить.' : '');
+    else text = 'ИИ посмотрит на всё, что вы прошли вдвоём (' + n + ' ' + plural(n, 'модуль', 'модуля', 'модулей') + '), и напишет общий разбор: сквозные линии каждого, где вы промахиваетесь и с чего начать разговор.';
+    if (o.at) btns += '<button class="btn small ghost" id="ov-open">Открыть</button>';
+    if (!o.pending && n >= min && fresh) btns += '<button class="btn small" id="ov-ask">' + (o.at ? 'Обновить' : 'Получить разбор') + '</button>';
+    return '<div class="topic-card wide overall"><div class="topic-top"><h3>Общий разбор от ИИ</h3>' + (o.pending ? '<span class="chip wait">Готовится</span>' : '') + '</div>' +
+      '<p>' + text + '</p>' + (btns ? '<div class="topic-foot"><small>по всем модулям</small><span class="btns">' + btns + '</span></div>' : '') + '</div>';
+  }
+  function overallAsk() {
+    var b = $('#ov-ask');
+    if (b) { b.disabled = true; b.textContent = 'Отправляем…'; }
+    api('overall_request', { rid: rid(), id: S.pairId, t: S.token })
+      .then(function () {
+        track('overall_request');
+        S.cab.overall = Object.assign({}, S.cab.overall, { pending: true });
+        cabinetView();
+      })
+      .catch(function (e) { if (b) { b.disabled = false; b.textContent = 'Получить разбор'; } alert(e.message); });
+  }
+  function overallView() {
+    spinner('Загружаем общий разбор…');
+    api('overall_view', { id: S.pairId, t: S.token })
+      .then(function (r) {
+        track('view_overall');
+        render('<p class="crumbs"><a href="' + cabHref() + '">← Кабинет пары</a></p><div class="paper">' + r.html + '</div>' +
+          '<div class="center" style="margin-top:28px"><a class="btn" href="' + cabHref() + '">В кабинет пары</a></div>');
+      })
+      .catch(function (e) { errorScreen(e.message === 'not_ready' ? 'Общий разбор ещё готовится — он придёт на почту.' : e.message, cabHref()); });
   }
   function plural(n, one, few, many) {
     var m10 = n % 10, m100 = n % 100;
@@ -569,7 +628,7 @@
   // ───────────────────────── тема: вопросы, догадки, фраза партнёру
   var T = null;
   function topicKey(id) { return 'cq_topic_' + (S.ctx === 'cabinet' ? S.token : 'new') + '_' + id; }
-  function saveTopic() { store.set(topicKey(T.topic.id), { a: T.a, g: T.g, note: T.note, idx: T.idx, nameSelf: T.nameSelf, namePartner: T.namePartner }); }
+  function saveTopic() { store.set(topicKey(T.topic.id), { a: T.a, g: T.g, note: T.note, idx: T.idx, nameSelf: T.nameSelf, namePartner: T.namePartner, genderSelf: T.genderSelf, genderPartner: T.genderPartner }); }
   function steps(topic) {
     var out = [];
     topic.questions.forEach(function (q, i) {
@@ -603,6 +662,8 @@
         ? '<form class="panel" id="names" novalidate><div class="grid2">' +
             field('nameSelf', 'Ваше имя', 'text', saved && saved.nameSelf || contact.nameSelf || '', 'given-name') +
             field('namePartner', 'Имя партнёра', 'text', saved && saved.namePartner || '', 'off') +
+            genderField('genderSelf', 'Как к вам обращаться', saved && saved.genderSelf || contact.genderSelf || '') +
+            genderField('genderPartner', 'Как обращаться к партнёру', saved && saved.genderPartner || '') +
           '</div><p class="error" id="err" hidden></p>' + topicCta(n, topic) + '</form>'
         : topicCta(n, topic))
     );
@@ -612,7 +673,9 @@
       if (isNew && (!nameSelf || !namePartner)) { var e = $('#err'); e.textContent = 'Укажите оба имени — они нужны для вопросов-догадок.'; e.hidden = false; return; }
       if (fresh) store.del(topicKey(id));
       var sv = fresh ? null : store.get(topicKey(id));
-      T = { topic: topic, steps: steps(topic), a: sv && sv.a || {}, g: sv && sv.g || {}, note: sv && sv.note || '', idx: sv && sv.idx || 0, nameSelf: nameSelf, namePartner: namePartner };
+      var f = $('#names');
+      T = { topic: topic, steps: steps(topic), a: sv && sv.a || {}, g: sv && sv.g || {}, note: sv && sv.note || '', idx: sv && sv.idx || 0, nameSelf: nameSelf, namePartner: namePartner,
+        genderSelf: f ? radio(f, 'genderSelf') : '', genderPartner: f ? radio(f, 'genderPartner') : '' };
       track('topic_start', { topic: id, restart: !!fresh });
       topicStep();
     }
@@ -670,7 +733,8 @@
         (isNew ? '<div class="grid2">' +
             field('emailSelf', 'Ваш email', 'email', contact.emailSelf || '', 'email') +
             field('emailPartner', 'Email: ' + esc(T.namePartner), 'email', '', 'off') +
-          '</div><p class="sub">Вам придёт ссылка на кабинет пары, а ' + esc(T.namePartner) + ' получит приглашение ответить на эту тему.</p>' : '') +
+          '</div><p class="sub">Вам придёт ссылка на кабинет пары, а ' + esc(T.namePartner) + ' получит приглашение ответить на эту тему.</p>'
+          : S.cab.genderMe ? '' : genderField('genderSelf', 'Как к вам обращаться в разборе', '')) +
         '<label class="hp" aria-hidden="true">Сайт<input name="website" tabindex="-1" autocomplete="off"></label>' +
         CONSENT +
         '<p class="error" id="err"' + (answered < need ? '' : ' hidden') + '>' + (answered < need ? 'Ответьте хотя бы на ' + need + ' вопросов из ' + topic.questions.length + ' — сейчас ' + answered + '.' : '') + '</p>' +
@@ -699,8 +763,9 @@
       if (!f.elements.consent.checked) return fail('Подтвердите согласие, чтобы продолжить.');
       if (v('website')) return;
       T.note = v('note');
+      if (!isNew && !S.cab.genderMe) T.genderSelf = radio(f, 'genderSelf');
       if (isNew) {
-        store.set('cq_contact', { nameSelf: T.nameSelf, emailSelf: v('emailSelf') });
+        store.set('cq_contact', { nameSelf: T.nameSelf, emailSelf: v('emailSelf'), genderSelf: T.genderSelf });
         submitStart(v('emailSelf'), v('emailPartner'));
       } else submitTopic();
     });
@@ -711,7 +776,7 @@
   function submitStart(emailA, emailB) {
     var topic = T.topic;
     spinner('Отправляем ответы и приглашение…');
-    api('start', Object.assign({ rid: rid(), topic: topic.id, nameA: T.nameSelf, emailA: emailA, nameB: T.namePartner, emailB: emailB, meta: { utm: utm, sid: sid } }, topicPayload()))
+    api('start', Object.assign({ rid: rid(), topic: topic.id, nameA: T.nameSelf, emailA: emailA, nameB: T.namePartner, emailB: emailB, genderA: T.genderSelf, genderB: T.genderPartner, meta: { utm: utm, sid: sid } }, topicPayload()))
       .then(function (r) {
         track('topic_submit', { topic: topic.id, ctx: 'new' });
         store.del(topicKey(topic.id));
@@ -728,11 +793,12 @@
   function submitTopic() {
     var topic = T.topic, partnerDone = S.cab.topics[topic.id] && S.cab.topics[topic.id].partner;
     spinner(partnerDone ? 'Сравниваем ответы и готовим разбор…' : 'Отправляем ответы…');
-    api('answer', Object.assign({ rid: rid(), id: S.pairId, t: S.token, kind: topic.id }, topicPayload()))
+    api('answer', Object.assign({ rid: rid(), id: S.pairId, t: S.token, kind: topic.id, gender: T.genderSelf }, topicPayload()))
       .then(function (r) {
         track('topic_submit', { topic: topic.id, ctx: 'cabinet', done: r.done });
         store.del(topicKey(topic.id));
-        if (r.done) return showTalk(r.html, topic, 'Разбор готов и отправлен вам обоим на почту.');
+        if (T.genderSelf) S.cab.genderMe = T.genderSelf;
+        if (r.done) return showTalk(r.html, topic, readyNote(r));
         render('<p class="crumbs"><a href="' + cabHref() + '">← Кабинет пары</a></p>' +
           '<div class="panel center"><div class="okmark">✓</div><h2>Готово!</h2>' +
           '<p>' + esc(S.cab.namePartner) + ' получит письмо с приглашением ответить на тему ' + esc(CQT.quoted(topic.title)) + '. Как только это случится, разбор и план разговора придут вам обоим.</p>' + mailNote() +
@@ -772,7 +838,7 @@
     },
     newPair: function (d) {
       if (d.emailA.toLowerCase() === d.emailB.toLowerCase()) throw new Error('Email партнёра должен отличаться от вашего.');
-      return { id: Demo.rnd(), tA: Demo.rnd(), tB: Demo.rnd(), A: { name: d.nameA, email: d.emailA }, B: { name: d.nameB, email: d.emailB }, talks: {} };
+      return { id: Demo.rnd(), tA: Demo.rnd(), tB: Demo.rnd(), A: { name: d.nameA, email: d.emailA, gender: d.genderA || '' }, B: { name: d.nameB, email: d.emailB, gender: d.genderB || '' }, talks: {} };
     },
     create: function (d) {
       var p = Demo.newPair(d);
@@ -793,7 +859,7 @@
     invite: function (d) {
       var p = Demo.find(d);
       if (d.t !== p.tB || !p.A.answers) throw new Error('not_found');
-      return { ok: true, nameA: p.A.name, nameB: p.B.name, emailB: p.B.email, completed: !!p.completed };
+      return { ok: true, nameA: p.A.name, nameB: p.B.name, emailB: p.B.email, genderB: p.B.gender || '', completed: !!p.completed };
     },
     portraitDone: function (p) {
       var r = CQA.report(p.A, p.B);
@@ -805,7 +871,7 @@
     complete: function (d) {
       var p = Demo.find(d);
       if (p.completed) throw new Error('already_completed');
-      p.B = { name: d.nameB, email: d.emailB, answers: Demo.cleanPortrait(d.answers) };
+      p.B = { name: d.nameB, email: d.emailB, gender: d.genderB || p.B.gender || '', answers: Demo.cleanPortrait(d.answers) };
       return { ok: true, html: Demo.portraitDone(p) };
     },
     report: function (d) {
@@ -816,7 +882,7 @@
     cabinet: function (d) {
       var p = Demo.find(d), me = Demo.role(p, d.t), other = me === 'A' ? 'B' : 'A', topics = {};
       Object.keys(p.talks).forEach(function (k) { var s = p.talks[k]; topics[k] = { me: !!s[me], partner: !!s[other], done: !!s.completed }; });
-      return { ok: true, me: me, nameMe: p[me].name, namePartner: p[other].name, emailMe: p[me].email,
+      return { ok: true, me: me, nameMe: p[me].name, namePartner: p[other].name, emailMe: p[me].email, genderMe: p[me].gender || '', genderPartner: p[other].gender || '', ai: false,
         portrait: { me: !!p[me].answers, partner: !!p[other].answers, done: !!p.completed }, topics: topics };
     },
     talkReport: function (p, id) {
@@ -829,14 +895,15 @@
       });
       var s = p.talks[id];
       merge(allA, s.A.a); merge(allB, s.B.a);
-      var X = { name: p.A.name, email: p.A.email, a: s.A.a, g: s.A.g, note: s.A.note, all: allA };
-      var Y = { name: p.B.name, email: p.B.email, a: s.B.a, g: s.B.g, note: s.B.note, all: allB };
+      var X = { name: p.A.name, email: p.A.email, gender: p.A.gender, a: s.A.a, g: s.A.g, note: s.A.note, all: allA };
+      var Y = { name: p.B.name, email: p.B.email, gender: p.B.gender, a: s.B.a, g: s.B.g, note: s.B.note, all: allB };
       var r = CQT.report(id, X, Y, { mods: mods });
       r.X = X; r.Y = Y;
       return r;
     },
     answer: function (d) {
       var p = Demo.find(d), me = Demo.role(p, d.t), other = me === 'A' ? 'B' : 'A';
+      if (d.gender) p[me].gender = d.gender;
       if (d.kind === 'portrait') {
         if (p[me].answers) return p.completed ? { ok: true, done: true, html: CQA.report(p.A, p.B).html } : { ok: true, done: false };
         p[me].answers = Demo.cleanPortrait(d.answers);

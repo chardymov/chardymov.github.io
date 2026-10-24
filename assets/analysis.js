@@ -64,6 +64,56 @@ var CQA = (function (DATA) {
     return list.length ? list.reduce(function (s, v) { return s + v; }, 0) / list.length : null;
   }
 
+  // ───────────────────────── род: «сделал(а)» → «сделал» / «сделала»
+  // Человек: { name, gender: 'm' | 'f' | '' }. Пустой gender — оставляем обе формы.
+  // Форма относится к тому, чьё имя ближе всего слева в том же предложении; если между именем
+  // и формой стоит слово «партнёр», — ко второму человеку. Без имени в предложении форма не меняется.
+  // force — выбрать род этого человека для всех форм (например, в «инструкции» одного человека).
+  var PRON = { 'его': 'её', 'ему': 'ей', 'им': 'ей', 'ним': 'ней', 'он': 'она' };
+  function norm(w) { return w.toLowerCase().replace(/ё/g, 'е'); }
+  function isPair(a, b) {
+    var x = norm(a), y = norm(b);
+    return x !== y && ((PRON[x] && norm(PRON[x]) === y) || (x.length > 1 && x.slice(0, 2) === y.slice(0, 2)));
+  }
+  function genderAt(text, pos, people, force) {
+    if (force) return force.gender;
+    var start = Math.max(text.lastIndexOf('. ', pos), text.lastIndexOf('! ', pos), text.lastIndexOf('? ', pos),
+      text.lastIndexOf('<p', pos), text.lastIndexOf('<li', pos), text.lastIndexOf('<div', pos), text.lastIndexOf('<td', pos));
+    var seg = text.slice(Math.max(0, start), pos), best = -1, who = null;
+    people.forEach(function (P0) {
+      var i = P0 && P0.name ? seg.lastIndexOf(P0.name) : -1;
+      if (i > best) { best = i; who = P0; }
+    });
+    if (!who) return '';
+    var re = /партн[её]р/gi, m, partner = -1;
+    while ((m = re.exec(seg))) partner = m.index;
+    if (partner > best && people.length > 1) who = people[0] === who ? people[1] : people[0];
+    return who.gender;
+  }
+  function genderize(text, people, force) {
+    people = (people || []).filter(Boolean);
+    if (!text || !(force ? force.gender : people.some(function (P0) { return P0.gender; }))) return text;
+    var out = String(text);
+    // Два прохода; в каждом позиции считаются по его собственной входной строке.
+    var s1 = out;
+    out = s1.replace(/([А-Яа-яЁё]+) \(([А-Яа-яЁё]+)\)/g, function (all, a, b, pos) {
+      if (!isPair(a, b)) return all;
+      var g = genderAt(s1, pos, people, force);
+      return g === 'm' ? a : g === 'f' ? b : all;
+    });
+    var s2 = out;
+    return s2.replace(/([А-Яа-яЁё]+)\((а|на|ла)\)/g, function (all, w, suf, pos) {
+      var g = genderAt(s2, pos, people, force);
+      if (g === 'm') return w;
+      if (g !== 'f') return all;
+      if (suf === 'на' && /ен$/.test(w)) return w.slice(0, -2) + 'на';
+      if (suf === 'ла') return w.replace(/ё/g, 'е') + 'ла';
+      return w + suf;
+    });
+  }
+  // Подпись для текста, который уходит в Claude: «Vitalii (он)».
+  function withGender(P0) { return P0.name + (P0.gender === 'm' ? ' (он)' : P0.gender === 'f' ? ' (она)' : ''); }
+
   // ───────────────────────── оси портрета
   var AXES = {
     open: { title: 'Сдержанность ↔ открытость', lo: 'сдержанность', hi: 'открытость',
@@ -175,7 +225,7 @@ var CQA = (function (DATA) {
   function dynamics(A, B) {
     var out = [];
     function add(level, title, text, rec, X, Y) {
-      out.push({ level: level, title: title, text: fill(text, X, Y), rec: rec ? fill(rec, X, Y) : '' });
+      out.push({ level: level, title: title, text: genderize(fill(text, X, Y), [A, B]), rec: rec ? genderize(fill(rec, X, Y), [A, B]) : '' });
     }
     var P = [[A, B], [B, A]];
     var nA = A.name, nB = B.name;
@@ -502,7 +552,7 @@ var CQA = (function (DATA) {
     if (k(21).length) facts.push(fill('{X} считает главным в отношениях ' + esc(words(VALUE_ACC, k(21))) + '.', n));
     if (k(22).length) facts.push(fill('Через пять лет {X} видит пару так: ' + esc(words(FUTURE, k(22), '; ')) + '.', n));
 
-    out += card(axHtml + texts + (facts.length ? p(facts.join(' '), 'margin:0') : ''));
+    out += genderize(card(axHtml + texts + (facts.length ? p(facts.join(' '), 'margin:0') : '')), [P0]);
     out += manualHtml(P0);
     return out;
   }
@@ -525,8 +575,8 @@ var CQA = (function (DATA) {
       item('После близости', AFTER, 30);
     }
     if (!li.length) return '';
-    return card('<div style="font:600 16px/1.35 ' + FONT + ';color:' + C.ink + ';margin:0 0 6px">Инструкция по применению: ' + esc(n) + '</div>' +
-      '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">' + li.join('') + '</table>', C.soft, C.line);
+    return genderize(card('<div style="font:600 16px/1.35 ' + FONT + ';color:' + C.ink + ';margin:0 0 6px">Инструкция по применению: ' + esc(n) + '</div>' +
+      '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">' + li.join('') + '</table>', C.soft, C.line), [P0], P0);
   }
 
   // ───────────────────────── список ответов одного человека (для письма)
@@ -662,7 +712,7 @@ var CQA = (function (DATA) {
 
   // Текстовая сводка для Claude (и для логов)
   function reportText(A, B, cmp, dyn) {
-    var lines = ['Партнёр A: ' + A.name, 'Партнёр B: ' + B.name, 'Индекс согласованности: ' + cmp.score + '%', '', 'Ответы:'];
+    var lines = ['Партнёр A: ' + withGender(A), 'Партнёр B: ' + withGender(B), 'Индекс согласованности: ' + cmp.score + '%', '', 'Ответы:'];
     QS.forEach(function (q) {
       var x = keys(A, q.id), y = keys(B, q.id);
       if (!x.length && !y.length) return;
@@ -709,7 +759,7 @@ var CQA = (function (DATA) {
         p('Это займёт около 10 минут. Отвечайте честно и самостоятельно: правильных ответов нет. Когда вы закончите, вы оба получите психологический разбор пары и рекомендации.') +
         button(link, 'Пройти тест') +
         muted('Ответы ' + esc(A.name) + ' вы увидите только в итоговом разборе — вместе со своими. Если кнопка не работает, откройте ссылку: ' + esc(link));
-      return { subject: A.name + ' приглашает вас пройти тест для пар', html: emailWrap(html, FOOT) };
+      return { subject: A.name + ' приглашает вас пройти тест для пар', html: emailWrap(genderize(html, [A, B]), FOOT) };
     },
     // Итоговый разбор — каждому из партнёров
     result: function (A, B, reportHtml, link, forName, cabLink) {
@@ -721,7 +771,7 @@ var CQA = (function (DATA) {
   };
 
   return {
-    data: DATA, mail: mail, axes: AXES, axisOrder: AXIS_ORDER, axisLevel: axisLevel, esc: esc, plain: plain, fill: fill,
+    data: DATA, mail: mail, axes: AXES, axisOrder: AXIS_ORDER, genderize: genderize, withGender: withGender, axisLevel: axisLevel, esc: esc, plain: plain, fill: fill,
     arr: arr, inter: inter, sameSet: sameSet, mean: mean, joinAnd: joinAnd, relation: relation, axisRow: axisRow, dynCard: dynCard, font: FONT,
     axisScore: axisScore, compare: compare, dynamics: dynamics,
     report: report, portraitHtml: portraitHtml, answersHtml: answersHtml,
