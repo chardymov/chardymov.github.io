@@ -4,6 +4,14 @@
   var D = CQ_DATA, QS = D.questions;
   var BBY = {};
   D.blocks.forEach(function (b) { BBY[b.id] = b; });
+  // Особые категории данных (секс, здоровье). CONFIG.SENSITIVE = false — блок портрета о сексуальности
+  // не задаётся, а темы с пометкой sensitive скрыты (сервер их тоже не принимает).
+  if (CONFIG.SENSITIVE === false) {
+    QS = QS.filter(function (q) { return !BBY[q.block].optional; });
+    for (var ti = CQT.topics.length - 1; ti >= 0; ti--) if (CQT.topics[ti].sensitive) CQT.topics.splice(ti, 1);
+    var topicById = CQT.topic;
+    CQT.topic = function (id) { var t = topicById(id); return t && !t.sensitive ? t : null; };
+  }
   var app = document.getElementById('app');
   var esc = CQA.esc;
   var DEMO = !CONFIG.API_URL;
@@ -99,8 +107,26 @@
         try { j = JSON.parse(txt); } catch (e) { /* не JSON */ }
         if (!j || typeof j.ok !== 'boolean' || j.error === 'retry') return retry('non-JSON reply: ' + String(txt).slice(0, 120));
         if (!j.ok) throw new Error(j.error || 'Что-то пошло не так');
-        return j;
+        return hydrate(j);
       });
+  }
+  // Сервер на PHP (vdvoem.pro) отдаёт не готовый HTML разбора, а данные для него (rep) — разбор строим здесь
+  // тем же движком, что и Apps Script. Раздел от ИИ (claude) — если он был написан раньше.
+  function hydrate(j) {
+    var r = j.rep;
+    if (!r || j.html) return j;
+    if (r.kind === 'portrait') j.html = withNarrative(CQA.report(r.A, r.B, { ctx: r.ctx, prev: r.prev }).html, r.claude, 'Общий взгляд на вашу пару');
+    else if (r.kind === 'talk') j.html = withNarrative(CQT.report(r.topic, r.X, r.Y, { mods: r.mods, ctx: r.ctx, prev: r.prev }).html, r.claude, 'Взгляд психолога на этот разговор');
+    else if (r.kind === 'overall') j.html = CQT.overallHtml(r.text, r.A, r.B, r.date);
+    return j;
+  }
+  function withNarrative(html, narrative, heading) {
+    if (!narrative) return html;
+    var paras = String(narrative).split(/\n\s*\n/).map(function (t) { return t.trim(); }).filter(String);
+    var inner = '<div style="font:600 11px/1 sans-serif;letter-spacing:.06em;text-transform:uppercase;color:' + CQA.colors.accent + ';margin:0 0 10px">Взгляд психолога · написано ИИ</div>' +
+      paras.map(function (t) { return CQA.p(CQA.esc(t)); }).join('') +
+      CQA.muted('Этот раздел написал ИИ (Claude) по вашим ответам. Он может ошибаться — воспринимайте его как повод для разговора.');
+    return html.replace('<!--CLAUDE-->', CQA.h2(heading) + CQA.card(inner, CQA.colors.accentSoft, '#efcfdb'));
   }
   function rid() { return (Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)).slice(0, 16); }
 
@@ -289,8 +315,39 @@
   }
 
   // Карточки тем; status — темы из кабинета (или null на главной)
+  // Темы по разделам (CQ_TOPICS.groups): [{ id, title, topics: [тема] }], пустые разделы пропускаются.
+  function topicGroups() {
+    var by = {}, used = {}, out = [];
+    CQT.topics.forEach(function (t) { by[t.id] = t; });
+    (CQ_TOPICS.groups || []).forEach(function (g) {
+      var list = g.topics.map(function (id) { used[id] = 1; return by[id]; }).filter(Boolean);
+      if (list.length) out.push({ id: g.id, title: g.title, topics: list });
+    });
+    var rest = CQT.topics.filter(function (t) { return !used[t.id]; });
+    if (rest.length) out.push({ id: 'other', title: 'Другие темы', topics: rest });
+    return out;
+  }
   function topicGrid(status) {
-    var live = CQT.topics.map(function (t) {
+    var groups = topicGroups();
+    var nav = '<nav class="group-nav">' + groups.map(function (g) {
+      return '<a href="#g-' + g.id + '" data-group="' + g.id + '">' + esc(g.title) + '</a>';
+    }).join('') + '</nav>';
+    var live = groups.map(function (g) {
+      var done = status ? g.topics.filter(function (t) { return status[t.id] && (status[t.id].done || status[t.id].was); }).length : 0;
+      return '<h3 class="group-h" id="g-' + g.id + '">' + esc(g.title) +
+        (status ? '<small>' + (done ? 'пройдено ' + done + ' из ' + g.topics.length : g.topics.length + ' ' + plural(g.topics.length, 'тема', 'темы', 'тем')) + '</small>' : '') + '</h3>' +
+        '<div class="topic-grid">' + topicCards(g.topics, status) + '</div>';
+    }).join('');
+    var votes = store.get('cq_votes') || {};
+    var soon = CQT.soon.map(function (t) {
+      return '<div class="topic-card soon"><div class="topic-top"><h3>' + esc(t.title) + '</h3><span class="chip">скоро</span></div><p>' + esc(t.lead) + '</p>' +
+        '<div class="topic-foot"><small>' + (votes[t.id] ? 'Спасибо! Учтём ваш голос' : 'Хотите эту тему раньше?') + '</small>' +
+        (votes[t.id] ? '' : '<button class="btn small ghost" data-vote="' + t.id + '">Хочу эту тему</button>') + '</div></div>';
+    }).join('');
+    return nav + live + (soon ? '<h3 class="soon-h">Скоро</h3><div class="topic-grid">' + soon + '</div>' : '');
+  }
+  function topicCards(topics, status) {
+    return topics.map(function (t) {
       var st = status && status[t.id] || {}, chip = '', label = 'Выбрать';
       if (status) {
         var again = st.was ? 'Повтор · ' : '';
@@ -306,15 +363,14 @@
         '<p>' + esc(t.lead) + '</p><div class="topic-foot"><small>' + t.questions.length + ' вопросов · ≈ ' + t.minutes + ' мин' + (t.adult ? ' · 18+' : t.deep ? ' · глубокая' : '') + '</small>' +
         '<span class="btns">' + extra + '<button class="btn small' + (st.done || st.me ? ' ghost' : '') + '" data-topic="' + t.id + '">' + label + '</button></span></div></div>';
     }).join('');
-    var votes = store.get('cq_votes') || {};
-    var soon = CQT.soon.map(function (t) {
-      return '<div class="topic-card soon"><div class="topic-top"><h3>' + esc(t.title) + '</h3><span class="chip">скоро</span></div><p>' + esc(t.lead) + '</p>' +
-        '<div class="topic-foot"><small>' + (votes[t.id] ? 'Спасибо! Учтём ваш голос' : 'Хотите эту тему раньше?') + '</small>' +
-        (votes[t.id] ? '' : '<button class="btn small ghost" data-vote="' + t.id + '">Хочу эту тему</button>') + '</div></div>';
-    }).join('');
-    return '<div class="topic-grid">' + live + '</div>' + (soon ? '<h3 class="soon-h">Скоро</h3><div class="topic-grid">' + soon + '</div>' : '');
   }
   function bindTopicGrid(open) {
+    app.querySelectorAll('[data-group]').forEach(function (a) {
+      a.addEventListener('click', function (e) {
+        var el = document.getElementById('g-' + a.getAttribute('data-group'));
+        if (el) { e.preventDefault(); el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+      });
+    });
     app.querySelectorAll('[data-retake]').forEach(function (b) {
       b.addEventListener('click', function () { var id = b.getAttribute('data-retake'); track('topic_retake', { topic: id }); S.retake = id; topicIntro(id); });
     });
@@ -847,15 +903,17 @@
 
   // ───────────────────────── общий разбор (только когда на сервере подключён Claude)
   function overallCard(c) {
-    if (!c.ai) return '';
     var o = c.overall || {}, n = c.modules, min = c.overallMin || 3, fresh = n > (o.modules || 0);
+    if (!c.ai && !o.at) return '';
     var text, btns = '';
-    if (o.pending) text = 'Готовится — придёт вам обоим на почту через несколько минут.';
+    // ИИ выключен, но разбор был написан раньше — его можно открыть.
+    if (!c.ai) text = 'Разбор от ' + esc(o.at) + ', по ' + o.modules + ' ' + plural(o.modules, 'модулю', 'модулям', 'модулям') + '.';
+    else if (o.pending) text = 'Готовится — придёт вам обоим на почту через несколько минут.';
     else if (n < min) text = 'Станет доступен, когда вы вдвоём пройдёте хотя бы ' + min + ' модуля. Сейчас пройдено: ' + n + '.';
     else if (o.at) text = 'Последний разбор — от ' + esc(o.at) + ', по ' + o.modules + ' ' + plural(o.modules, 'модулю', 'модулям', 'модулям') + '.' + (fresh ? ' С тех пор вы прошли ещё — его можно обновить.' : '');
     else text = 'ИИ посмотрит на всё, что вы прошли вдвоём (' + n + ' ' + plural(n, 'модуль', 'модуля', 'модулей') + '), и напишет общий разбор: сквозные линии каждого, где вы промахиваетесь и с чего начать разговор.';
     if (o.at) btns += '<button class="btn small ghost" id="ov-open">Открыть</button>';
-    if (!o.pending && n >= min && fresh) btns += '<button class="btn small" id="ov-ask">' + (o.at ? 'Обновить' : 'Получить разбор') + '</button>';
+    if (c.ai && !o.pending && n >= min && fresh) btns += '<button class="btn small" id="ov-ask">' + (o.at ? 'Обновить' : 'Получить разбор') + '</button>';
     return '<div class="topic-card wide overall"><div class="topic-top"><h3>Общий разбор от ИИ</h3>' + (o.pending ? '<span class="chip wait">Готовится</span>' : '') + '</div>' +
       '<p>' + text + '</p>' + (btns ? '<div class="topic-foot"><small>по всем модулям</small><span class="btns">' + btns + '</span></div>' : '') + '</div>';
   }
