@@ -329,13 +329,16 @@
   }
   function topicGrid(status) {
     var groups = topicGroups();
+    // Сколько в разделе готовых разборов, которые этот партнёр ещё не открывал.
+    var fresh = function (g) { return status ? g.topics.filter(function (t) { return status[t.id] && status[t.id].fresh; }).length : 0; };
     var nav = '<nav class="group-nav">' + groups.map(function (g) {
-      return '<a href="#g-' + g.id + '" data-group="' + g.id + '">' + esc(g.title) + '</a>';
+      return '<a href="#g-' + g.id + '" data-group="' + g.id + '"' + (fresh(g) ? ' class="has-fresh" title="Есть новый разбор"' : '') + '>' + esc(g.title) + '</a>';
     }).join('') + '</nav>';
     var live = groups.map(function (g) {
-      var done = status ? g.topics.filter(function (t) { return status[t.id] && (status[t.id].done || status[t.id].was); }).length : 0;
+      var done = status ? g.topics.filter(function (t) { return status[t.id] && (status[t.id].done || status[t.id].was); }).length : 0, n = fresh(g);
       return '<h3 class="group-h" id="g-' + g.id + '">' + esc(g.title) +
-        (status ? '<small>' + (done ? 'пройдено ' + done + ' из ' + g.topics.length : g.topics.length + ' ' + plural(g.topics.length, 'тема', 'темы', 'тем')) + '</small>' : '') + '</h3>' +
+        (status ? '<small>' + (n ? '<b class="fresh-n">' + (n > 1 ? n + ' ' + plural(n, 'новый разбор', 'новых разбора', 'новых разборов') : 'новый разбор') + '</b> · ' : '') +
+          (done ? 'пройдено ' + done + ' из ' + g.topics.length : g.topics.length + ' ' + plural(g.topics.length, 'тема', 'темы', 'тем')) + '</small>' : '') + '</h3>' +
         '<div class="topic-grid">' + topicCards(g.topics, status) + '</div>';
     }).join('');
     var votes = store.get('cq_votes') || {};
@@ -351,7 +354,8 @@
       var st = status && status[t.id] || {}, chip = '', label = 'Выбрать';
       if (status) {
         var again = st.was ? 'Повтор · ' : '';
-        if (st.done) { chip = '<span class="chip good">Разбор готов</span>'; label = 'Открыть разбор'; }
+        if (st.done && st.fresh) { chip = '<span class="chip new">Новый разбор</span>'; label = 'Открыть разбор'; }
+        else if (st.done) { chip = '<span class="chip good">Разбор готов</span>'; label = 'Открыть разбор'; }
         else if (st.me) { chip = '<span class="chip wait">' + again + 'Ждём ответа: ' + esc(S.cab ? S.cab.namePartner : 'партнёр') + '</span>'; label = 'Подробнее'; }
         else if (st.partner) { chip = '<span class="chip accent">' + again + 'Ваша очередь</span>'; label = 'Ответить'; }
         else label = 'Начать';
@@ -359,9 +363,9 @@
       // Пройденную тему можно пройти снова; во время повтора прошлый разбор остаётся доступен.
       var extra = st.done ? '<button class="btn small again" data-retake="' + t.id + '">Пройти снова</button>'
         : st.was ? '<button class="btn small ghost" data-prev="' + t.id + '">Прошлый разбор</button>' : '';
-      return '<div class="topic-card' + (st.partner && !st.me && !st.done ? ' hot' : st.me && !st.done ? ' waiting' : '') + '"><div class="topic-top"><h3>' + esc(t.title) + '</h3>' + chip + '</div>' +
+      return '<div class="topic-card' + (st.done && st.fresh ? ' fresh' : st.partner && !st.me && !st.done ? ' hot' : st.me && !st.done ? ' waiting' : '') + '"><div class="topic-top"><h3>' + esc(t.title) + '</h3>' + chip + '</div>' +
         '<p>' + esc(t.lead) + '</p><div class="topic-foot"><small>' + t.questions.length + ' вопросов · ≈ ' + t.minutes + ' мин' + (t.adult ? ' · 18+' : t.deep ? ' · глубокая' : '') + '</small>' +
-        '<span class="btns">' + extra + '<button class="btn small' + (st.done || st.me ? ' ghost' : '') + '" data-topic="' + t.id + '">' + label + '</button></span></div></div>';
+        '<span class="btns">' + extra + '<button class="btn small' + ((st.done && !st.fresh) || (st.me && !st.done) ? ' ghost' : '') + '" data-topic="' + t.id + '">' + label + '</button></span></div></div>';
     }).join('');
   }
   function bindTopicGrid(open) {
@@ -752,10 +756,10 @@
     var c = S.cab, pt = c.portrait;
     track('view_cabinet');
     var again = pt.was ? 'Повтор · ' : '';
-    var pState = pt.done ? '<span class="chip good">Разбор готов</span>' : pt.me ? '<span class="chip wait">' + again + 'Ждём ответа: ' + esc(c.namePartner) + '</span>' : pt.partner ? '<span class="chip accent">' + again + 'Ваша очередь</span>' : '';
+    var pState = pt.done && pt.fresh ? '<span class="chip new">Новый разбор</span>' : pt.done ? '<span class="chip good">Разбор готов</span>' : pt.me ? '<span class="chip wait">' + again + 'Ждём ответа: ' + esc(c.namePartner) + '</span>' : pt.partner ? '<span class="chip accent">' + again + 'Ваша очередь</span>' : '';
     var pReport = '?r=' + encodeURIComponent(S.pairId) + '&t=' + encodeURIComponent(S.token);
     // Портрет можно пройти снова; пока идёт повтор, прошлый разбор открывается по той же ссылке.
-    var pBtn = pt.done ? '<span class="btns"><button class="btn small again" id="portrait-retake">Пройти снова</button><a class="btn small ghost" href="' + pReport + '">Открыть разбор</a></span>'
+    var pBtn = pt.done ? '<span class="btns"><button class="btn small again" id="portrait-retake">Пройти снова</button><a class="btn small' + (pt.fresh ? '' : ' ghost') + '" href="' + pReport + '">Открыть разбор</a></span>'
       : '<span class="btns">' + (pt.was ? '<a class="btn small ghost" href="' + pReport + '">Прошлый разбор</a>' : '') +
         (pt.me ? tgShare(partnerLink('portrait'), inviteText(null), 'Напомнить в Telegram') : '<button class="btn small" id="portrait">' + (pt.partner ? 'Ответить' : 'Пройти') + '</button>') + '</span>';
     var doneTopics = CQT.topics.filter(function (t) { return c.topics[t.id] && c.topics[t.id].done; }).length;
@@ -766,12 +770,13 @@
         '<p class="lead">Выберите, о чём хотите поговорить сегодня. Каждый новый разбор учитывает ваш портрет и все темы, которые вы уже прошли вдвоём' +
           (doneTopics || pt.done ? ' — сейчас это ' + [pt.done ? 'портрет' : '', doneTopics ? doneTopics + ' ' + plural(doneTopics, 'тема', 'темы', 'тем') : ''].filter(Boolean).join(' и ') : '') + '.</p>' +
       '</section>' +
+      freshBox(c, pReport) +
       contextCard(c) +
       (TG ? '<p class="ctx-line"><button class="link" id="tg-pairs">Мои пары</button> · <button class="link" id="tg-find">Найти пары с сайта по почте</button></p>' : '') +
       overallCard(c) +
       (c.notMine ? '<div class="topic-card wide waiting"><p>Похоже, это ссылка для ' + esc(c.nameMe) + ', а ваш аккаунт Telegram уже связан с ' + esc(c.namePartner) + '. Перешлите её партнёру — если ответить здесь, ответы засчитаются за ' + esc(c.nameMe) + '.</p></div>' : '') +
       tgCard(c.tg) + partnerTgCard(c) + emailCard(c) +
-      '<div class="topic-card wide' + (pt.partner && !pt.me ? ' hot' : pt.me && !pt.done ? ' waiting' : '') + '"><div class="topic-top"><h3>Портрет пары</h3>' + pState + '</div>' +
+      '<div class="topic-card wide' + (pt.done && pt.fresh ? ' fresh' : pt.partner && !pt.me ? ' hot' : pt.me && !pt.done ? ' waiting' : '') + '"><div class="topic-top"><h3>Портрет пары</h3>' + pState + '</div>' +
         '<p>' + QS.length + ' вопроса об общении, конфликтах, быте, деньгах, близости и будущем — основа для всех разговоров.</p>' +
         '<div class="topic-foot"><small>≈ 10 минут</small>' + pBtn + '</div></div>' +
       '<h2>Разговоры</h2>' +
@@ -795,6 +800,17 @@
     });
     bindTopicGrid(openTopic);
   }
+
+  // Готовые разборы, которые этот партнёр ещё не открывал (сервер помнит это для каждого из двоих).
+  function freshBox(c, pReport) {
+    var items = (c.portrait.done && c.portrait.fresh ? ['<a href="' + pReport + '">«Портрет пары»</a>'] : [])
+      .concat(CQT.topics.filter(function (t) { return c.topics[t.id] && c.topics[t.id].fresh; }).map(function (t) {
+        return '<a href="' + cabHref('&topic=' + t.id) + '">' + esc(CQT.quoted(t.title)) + '</a>';
+      }));
+    if (!items.length) return '';
+    return '<div class="fresh-box"><b>' + (items.length > 1 ? 'Новые разборы' : 'Новый разбор') + '</b> — ' + esc(c.namePartner) + ' тоже ответил' + gend(c.genderPartner) + ', можно открыть: ' + items.join(', ') + '</div>';
+  }
+  function gend(g) { return g === 'f' ? 'а' : g === 'm' ? '' : '(а)'; }
 
   // Пара начата в Telegram без почты: предлагаем добавить — письма с разборами и вход с сайта.
   function emailCard(c) {

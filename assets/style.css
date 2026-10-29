@@ -180,6 +180,14 @@ a { color: var(--accent); }
 .topic-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; display: flex; flex-direction: column; gap: 6px; }
 .topic-card.wide { margin: 0 0 28px; }
 .topic-card.hot { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+/* Готовый разбор, который этот партнёр ещё не открывал */
+.topic-card.fresh { border-color: var(--partner); box-shadow: 0 0 0 1px var(--partner) inset, 0 6px 18px rgba(47, 111, 143, .16); background: linear-gradient(180deg, rgba(47, 111, 143, .07), var(--surface) 60%); }
+.chip.new { background: var(--partner); color: var(--surface); }
+.group-nav a.has-fresh::after { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--partner); margin-left: 6px; vertical-align: middle; }
+.group-h .fresh-n { color: var(--partner); font-weight: 600; }
+.fresh-box { background: rgba(47, 111, 143, .09); border: 1px solid rgba(47, 111, 143, .35); border-radius: var(--radius); padding: 12px 16px; margin: 0 0 20px; font-size: 15px; }
+.fresh-box b { color: var(--partner); }
+.fresh-box a { color: var(--partner); font-weight: 600; }
 .topic-card.soon { background: transparent; border-style: dashed; }
 .topic-card.soon h3 { color: var(--muted); }
 .topic-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
