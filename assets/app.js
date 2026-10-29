@@ -807,8 +807,11 @@
       .concat(CQT.topics.filter(function (t) { return c.topics[t.id] && c.topics[t.id].fresh; }).map(function (t) {
         return '<a href="' + cabHref('&topic=' + t.id) + '">' + esc(CQT.quoted(t.title)) + '</a>';
       }));
-    if (!items.length) return '';
-    return '<div class="fresh-box"><b>' + (items.length > 1 ? 'Новые разборы' : 'Новый разбор') + '</b> — ' + esc(c.namePartner) + ' тоже ответил' + gend(c.genderPartner) + ', можно открыть: ' + items.join(', ') + '</div>';
+    var ov = c.overall && c.overall.at && c.overall.fresh && !c.overall.pending ? '<a href="' + cabHref('&go=overall') + '">общий разбор</a>' : '';
+    if (!items.length && !ov) return '';
+    if (!items.length) return '<div class="fresh-box"><b>Готов новый</b> ' + ov + ' — по всему, что вы прошли вдвоём.</div>';
+    return '<div class="fresh-box"><b>' + (items.length > 1 ? 'Новые разборы' : 'Новый разбор') + '</b> — ' + esc(c.namePartner) + ' тоже ответил' + gend(c.genderPartner) + ', можно открыть: ' + items.join(', ') +
+      (ov ? '. А ещё готов ' + ov + '.' : '') + '</div>';
   }
   function gend(g) { return g === 'f' ? 'а' : g === 'm' ? '' : '(а)'; }
 
@@ -928,9 +931,10 @@
     else if (n < min) text = 'Станет доступен, когда вы вдвоём пройдёте хотя бы ' + min + ' модуля. Сейчас пройдено: ' + n + '.';
     else if (o.at) text = 'Последний разбор — от ' + esc(o.at) + ', по ' + o.modules + ' ' + plural(o.modules, 'модулю', 'модулям', 'модулям') + '.' + (fresh ? ' С тех пор вы прошли ещё — его можно обновить.' : '');
     else text = 'ИИ посмотрит на всё, что вы прошли вдвоём (' + n + ' ' + plural(n, 'модуль', 'модуля', 'модулей') + '), и напишет общий разбор: сквозные линии каждого, где вы промахиваетесь и с чего начать разговор.';
-    if (o.at) btns += '<button class="btn small ghost" id="ov-open">Открыть</button>';
+    if (o.at) btns += '<button class="btn small' + (o.fresh ? '' : ' ghost') + '" id="ov-open">Открыть</button>';
     if (c.ai && !o.pending && n >= min && fresh) btns += '<button class="btn small" id="ov-ask">' + (o.at ? 'Обновить' : 'Получить разбор') + '</button>';
-    return '<div class="topic-card wide overall"><div class="topic-top"><h3>Общий разбор от ИИ</h3>' + (o.pending ? '<span class="chip wait">Готовится</span>' : '') + '</div>' +
+    return '<div class="topic-card wide overall' + (o.at && o.fresh && !o.pending ? ' fresh' : '') + '"><div class="topic-top"><h3>Общий разбор от ИИ</h3>' +
+      (o.pending ? '<span class="chip wait">Готовится</span>' : o.at && o.fresh ? '<span class="chip new">Новый разбор</span>' : '') + '</div>' +
       '<p>' + text + '</p>' + (btns ? '<div class="topic-foot"><small>по всем модулям</small><span class="btns">' + btns + '</span></div>' : '') + '</div>';
   }
   function overallAsk() {
